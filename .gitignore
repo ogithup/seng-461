@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+node_modules/
+
+# Per-project workspaces created at runtime by the API
+workspaces/
