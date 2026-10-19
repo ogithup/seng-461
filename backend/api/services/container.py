@@ -1,6 +1,7 @@
 """Wires the services together.
 
-`build_services()` with no arguments gives the Sprint 1 setup (all mocks). To integrate
+`build_services()` with no arguments gives the Sprint 1 fake agent with mock storage
+and execution. To integrate
 a real module, pass it in:
 
     build_services(storage=Storage(...), agent=Orchestrator(...), executor=Executor(...))
@@ -11,12 +12,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Optional
 
+from backend.agent import Orchestrator
 from backend.api.config import Settings
 from backend.api.services.actions import ActionService
 from backend.api.services.approvals import ApprovalGate
 from backend.api.services.chat import ChatService
 from backend.api.services.guards import IdempotencyStore, RateLimiter
-from backend.api.services.mocks import InMemoryStorage, MockAgent, MockExecutor
+from backend.api.services.mocks import InMemoryStorage, MockExecutor
 from backend.api.services.ports import AgentPort, ExecutorPort, StoragePort
 from backend.api.services.projects import ProjectService
 from backend.api.services.runner import TaskRunner
@@ -45,7 +47,7 @@ def build_services(
 ) -> Services:
     settings = settings or Settings.from_env()
     storage = storage or InMemoryStorage()
-    agent = agent or MockAgent()
+    agent = agent or Orchestrator()
     executor = executor or MockExecutor()
 
     workspace = WorkspaceService(
