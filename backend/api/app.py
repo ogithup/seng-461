@@ -14,7 +14,7 @@ from backend.api.services.container import Services, build_services
 def create_app(
     services: Optional[Services] = None, settings: Optional[Settings] = None
 ) -> FastAPI:
-    """Build the app. With no arguments it runs on the Sprint 1 mocks.
+    """Build the app with the Sprint 1 agent and mock storage/execution by default.
 
     Pass `services=build_services(storage=..., agent=..., executor=...)` to run on the
     real modules.

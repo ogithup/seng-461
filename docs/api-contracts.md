@@ -13,7 +13,8 @@ uvicorn backend.main:app --reload                     # from the repo root; docs
 pytest                                                # integration tests in tests/integration
 ```
 
-Sprint 1 runs on mocks (`backend/api/services/mocks.py`): nothing is persisted, no model is
+Sprint 1 uses `backend.agent.Orchestrator` with a fixed planner and mock storage/execution
+(`backend/api/services/mocks.py`): records live only in memory, no model is
 called and **no command is ever executed**. To integrate a real module, pass it to
 `build_services(storage=..., agent=..., executor=...)` in `backend/api/services/container.py`.
 
