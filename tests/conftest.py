@@ -45,7 +45,11 @@ class Harness:
 @pytest.fixture
 def make_app(tmp_path):
     def build(agent=None, executor=None, **settings) -> Harness:
-        options = {"workspace_root": tmp_path / "workspaces", "rate_limit_per_minute": 0}
+        options = {
+            "workspace_root": tmp_path / "workspaces",
+            "database_path": tmp_path / "test.db",
+            "rate_limit_per_minute": 0,
+        }
         options.update(settings)
         clock = Clock()
         services = build_services(Settings(**options), agent=agent, executor=executor, clock=clock)

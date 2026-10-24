@@ -2,7 +2,7 @@
 
     uvicorn backend.main:app --reload
 
-Sprint 1 uses the fake agent with mock execution and storage. To integrate a real
+Sprint 2 uses the fake agent with SQLite storage (DATABASE_PATH) and mock execution. To integrate a real
 module, pass it to build_services (see backend/api/services/container.py).
 """
 from backend.api.app import create_app
