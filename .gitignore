@@ -8,3 +8,7 @@ node_modules/
 
 # Per-project workspaces created at runtime by the API
 workspaces/
+
+# SQLite databases created at runtime
+data/
+*.db
