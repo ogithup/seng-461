@@ -29,7 +29,9 @@ def test_chat_replay_does_not_run_the_agent_twice(make_app):
     first = app.chat(pid, headers=key("chat-1"))
     second = app.chat(pid, headers=key("chat-1"))
     assert second.json() == first.json()
-    assert len(app.client.get("/api/tasks", params={"project_id": pid}).json()["tasks"]) == 2
+    assert len(app.client.get("/api/tasks", params={"project_id": pid}).json()["tasks"]) == len(
+        first.json()["tasks"]
+    )
 
 
 def test_keys_are_scoped_per_endpoint(make_app):

@@ -1,23 +1,27 @@
 """Sprint 2 target: API -> agent -> SQLite -> API, and the same data after a restart."""
 from fastapi.testclient import TestClient
 
+from backend.agent import Orchestrator
 from backend.api.app import create_app
 from backend.api.config import Settings
 from backend.api.services.container import build_services
 
 
-def restart(tmp_path):
+def restart(tmp_path, agent=None):
     """A brand-new application on the same database file, as after a process restart."""
     settings = Settings(
         workspace_root=tmp_path / "workspaces",
         database_path=tmp_path / "test.db",
         rate_limit_per_minute=0,
     )
-    return TestClient(create_app(build_services(settings)), raise_server_exceptions=False)
+    return TestClient(
+        create_app(build_services(settings, agent=agent or Orchestrator())),
+        raise_server_exceptions=False,
+    )
 
 
 def test_project_and_tasks_survive_a_restart(make_app, tmp_path):
-    app = make_app()
+    app = make_app(agent=Orchestrator())
     pid = app.project("Blog")
     chat = app.chat(pid, "Create a blog").json()
     assert [t["prompt"] for t in chat["tasks"]] == ["create project", "create index.html"]
@@ -35,7 +39,7 @@ def test_project_and_tasks_survive_a_restart(make_app, tmp_path):
 
 
 def test_work_continues_after_a_restart_without_reusing_ids(make_app, tmp_path):
-    app = make_app()
+    app = make_app(agent=Orchestrator())
     pid = app.project()
     app.chat(pid, "Create a blog")
 
@@ -49,7 +53,7 @@ def test_work_continues_after_a_restart_without_reusing_ids(make_app, tmp_path):
 
 
 def test_projects_do_not_share_tasks(make_app, tmp_path):
-    app = make_app()
+    app = make_app(agent=Orchestrator())
     first, second = app.project("A"), app.project("B")
     app.chat(first, "Create a blog")
     app.chat(first, "Create a blog")
