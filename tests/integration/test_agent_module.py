@@ -37,7 +37,7 @@ def test_default_api_uses_agent_and_exposes_stored_tasks(make_app, monkeypatch):
         return original(self, message)
 
     monkeypatch.setattr(Orchestrator, "plan", observed_plan)
-    app = make_app()
+    app = make_app(agent=Orchestrator())
     project_id = app.project("Blog")
     response = app.chat(project_id, "Create a blog")
     assert response.status_code == 200

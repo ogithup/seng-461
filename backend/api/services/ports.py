@@ -14,7 +14,7 @@ Record fields the API reads:
 """
 from typing import Any, List, Optional, Protocol
 
-from backend.api.schemas.contracts import ExecutionRequest
+from backend.api.schemas.contracts import ExecutionRequest, WriteFileRequest
 from backend.api.schemas.tasks import TaskOut
 
 
@@ -104,3 +104,21 @@ class ExecutorPort(Protocol):
         `approved=True` means a human approved this exact command; an executor must
         still refuse commands that are not allowed and not approved.
         """
+
+    def write_file(self, request: WriteFileRequest) -> Any:
+        """Write `request.path` under `request.working_directory` and return an
+        ExecutionResult-shaped object.
+
+        Optional for executors that only run commands. `success=True` must mean the
+        file exists on disk with exactly this content: verify before reporting.
+        """
+
+
+class SiteGeneratorPort(Protocol):
+    """Rana. Turns a validated website specification into static files. No model, no I/O."""
+
+    def generate(self, spec: Any) -> Any:
+        """Return {relative path: text content} for the whole site."""
+
+    def validate(self, files: Any) -> List[str]:
+        """Problems found in a generated file set (empty list = valid)."""

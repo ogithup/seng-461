@@ -34,6 +34,9 @@ class Settings:
     workspace_root: Path = _REPO_ROOT / "workspaces"
     # SQLite file holding projects, tasks and execution logs. Tests point this at a temp file.
     database_path: Path = _REPO_ROOT / "data" / "app.db"
+    # Optional "package.module:Name" overrides for the agent and the site generator.
+    agent_impl: Optional[str] = None
+    generator_impl: Optional[str] = None
     # Origins allowed to call the API from a browser (Vite dev server by default).
     cors_origins: Tuple[str, ...] = ("http://localhost:5173", "http://127.0.0.1:5173")
 
@@ -64,6 +67,8 @@ class Settings:
         origins = os.environ.get("CORS_ORIGINS")
         return cls(
             workspace_root=Path(workspace) if workspace else defaults.workspace_root,
+            agent_impl=os.environ.get("AGENT_IMPL") or None,
+            generator_impl=os.environ.get("GENERATOR_IMPL") or None,
             database_path=Path(database) if database else defaults.database_path,
             cors_origins=tuple(o.strip() for o in origins.split(",") if o.strip())
             if origins

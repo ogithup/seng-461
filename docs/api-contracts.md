@@ -13,13 +13,17 @@ uvicorn backend.main:app --reload                     # from the repo root; docs
 pytest                                                # integration tests in tests/integration
 ```
 
-Sprint 1 uses `backend.agent.Orchestrator` with a fixed planner and mock storage/execution
-(`backend/api/services/mocks.py`): records live only in memory, no model is
-called and **no command is ever executed**. To integrate a real module, pass it to
-`build_services(storage=..., agent=..., executor=...)` in `backend/api/services/container.py`.
+Sprint 3 default: `backend.integration.site_agent.SiteAgent` plans one `write_file` per generated
+file, the bounded `WorkspaceExecutor` writes and verifies them, records live in SQLite, and **no
+shell command is ever executed**. See `docs/sprint3-contracts.md` for the module contracts.
+To integrate a real module, pass it to `build_services(storage=..., agent=..., executor=...)` in
+`backend/api/services/container.py` or set `AGENT_IMPL` / `GENERATOR_IMPL`.
 
 | Env var | Default | Meaning |
 |---|---|---|
+| `DATABASE_PATH` | `<repo>/data/app.db` | SQLite file for projects, tasks, execution logs |
+| `AGENT_IMPL` | built-in `SiteAgent` | `package.module:Name` of an `AgentPort` factory |
+| `GENERATOR_IMPL` | built-in generator | `package.module:Name` of a `SiteGeneratorPort` factory |
 | `WORKSPACE_ROOT` | `<repo>/workspaces` | Per-project folders: `project_<id>/` |
 | `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Browser origins allowed (Vite dev server) |
 | `REQUIRE_IDEMPOTENCY_KEY` | `false` | Make the `Idempotency-Key` header mandatory on POSTs |

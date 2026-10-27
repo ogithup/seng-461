@@ -7,6 +7,8 @@ def test_settings_defaults_when_env_is_empty(monkeypatch):
     for name in (
         "WORKSPACE_ROOT",
         "DATABASE_PATH",
+        "AGENT_IMPL",
+        "GENERATOR_IMPL",
         "CORS_ORIGINS",
         "REQUIRE_IDEMPOTENCY_KEY",
         "API_RATE_LIMIT_PER_MINUTE",

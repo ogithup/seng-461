@@ -13,7 +13,12 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 from backend.api.config import Settings
 from backend.api.errors import conflict
-from backend.api.schemas.contracts import AgentAction, ExecutionRequest, ExecutionResult
+from backend.api.schemas.contracts import (
+    AgentAction,
+    ExecutionRequest,
+    ExecutionResult,
+    WriteFileRequest,
+)
 from backend.api.schemas.enums import ExecutionStatus, TaskStatus
 from backend.api.schemas.tasks import ExecutionOut, TaskOut
 from backend.api.services.approvals import ApprovalGate
@@ -136,6 +141,14 @@ class TaskRunner:
                 self._storage.update_task_status(task.id, TaskStatus.SUCCEEDED.value)
                 return _Outcome.DONE
 
+            if action.type == "write_file":
+                last_result = self._write_file(project_id, action)
+                self._record(task, action.command, last_result)
+                actions_taken += 1
+                if not last_result.success:
+                    failures += 1
+                continue
+
             if action.requires_approval or not self._is_allowed(action.command):
                 self._storage.save_execution(
                     task.id,
@@ -149,18 +162,22 @@ class TaskRunner:
             last_result = self._invoke(
                 project_id, action.command, requires_approval=False, approved=False
             )
-            self._storage.save_execution(
-                task.id,
-                action.command,
-                _status_for(last_result),
-                stdout=last_result.stdout,
-                stderr=last_result.stderr,
-                retry_count=last_result.retry_count,
-                duration_ms=last_result.duration_ms,
-            )
+            self._record(task, action.command, last_result)
             actions_taken += 1
             if not last_result.success:
                 failures += 1
+
+    def _record(self, task: TaskOut, command: str, result: ExecutionResult) -> None:
+        """Store what the executor reported, and nothing the agent or runner assumed."""
+        self._storage.save_execution(
+            task.id,
+            command,
+            _status_for(result),
+            stdout=result.stdout,
+            stderr=result.stderr,
+            retry_count=result.retry_count,
+            duration_ms=result.duration_ms,
+        )
 
     def _fail(self, task: TaskOut) -> _Outcome:
         self._storage.update_task_status(task.id, TaskStatus.FAILED.value)
@@ -172,6 +189,21 @@ class TaskRunner:
         except Exception:
             logger.exception("allowlist check failed; treating %r as needing approval", command)
             return False  # fail closed
+
+    def _write_file(self, project_id: int, action: AgentAction) -> ExecutionResult:
+        writer = getattr(self._executor, "write_file", None)
+        if writer is None:
+            return ExecutionResult(success=False, stderr="This executor cannot write files.")
+        request = WriteFileRequest(
+            working_directory=str(self._workspace.ensure_project_dir(project_id)),
+            path=action.path,
+            content=action.content,
+        )
+        try:
+            return ExecutionResult.model_validate(writer(request))
+        except Exception:
+            logger.exception("file write failed for project %s", project_id)
+            return ExecutionResult(success=False, stderr="The executor failed to write this file.")
 
     def _invoke(
         self, project_id: int, command: str, requires_approval: bool, approved: bool
