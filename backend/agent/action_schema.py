@@ -1,17 +1,26 @@
-"""Agent output shape, matching the API contract without importing its internals.
+"""Agent action shapes matching the API contract without importing API internals."""
 
-No actions are emitted in Sprint 1. Future actions are data for the API and
-executor; declaring an action never grants permission or runs a command.
-"""
-
-from typing import Literal, Optional, TypedDict
+from typing import Literal, Optional, TypedDict, Union
 
 
-class _RequiredAction(TypedDict):
+class _RunCommandRequired(TypedDict):
     type: Literal["run_command"]
     command: str
 
 
-class AgentAction(_RequiredAction, total=False):
+class RunCommandAction(_RunCommandRequired, total=False):
     requires_approval: bool
     reason: Optional[str]
+
+
+class _WriteFileRequired(TypedDict):
+    type: Literal["write_file"]
+    path: str
+    content: str
+
+
+class WriteFileAction(_WriteFileRequired, total=False):
+    reason: Optional[str]
+
+
+AgentAction = Union[RunCommandAction, WriteFileAction]
