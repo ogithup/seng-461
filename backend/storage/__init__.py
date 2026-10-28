@@ -15,6 +15,9 @@ from backend.storage.database import (
 )
 from backend.storage.models import (
     ExecutionRecord,
+    IdempotencyConflictError,
+    IdempotencyError,
+    IdempotencyInProgressError,
     NotFoundError,
     ProjectRecord,
     StorageError,
@@ -32,6 +35,10 @@ from backend.storage.repositories import (
     get_tasks,
     save_execution,
     update_task_status,
+)
+from backend.storage.sqlite_storage import (
+    FileMetadataRecord,
+    SQLiteStorage,
 )
 
 
@@ -133,10 +140,15 @@ class StorageService:
 
 __all__ = [
     "DEFAULT_DB_PATH",
+    "SQLiteStorage",
+    "FileMetadataRecord",
     "StorageService",
     "StorageError",
     "ValidationError",
     "NotFoundError",
+    "IdempotencyError",
+    "IdempotencyConflictError",
+    "IdempotencyInProgressError",
     "ProjectRecord",
     "TaskRecord",
     "ExecutionRecord",

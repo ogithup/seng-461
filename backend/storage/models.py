@@ -21,6 +21,18 @@ class NotFoundError(StorageError, LookupError):
     """Raised when a requested record or referenced foreign key does not exist."""
 
 
+class IdempotencyError(StorageError):
+    """Base exception for storage-level idempotency errors."""
+
+
+class IdempotencyConflictError(IdempotencyError):
+    """Raised when an idempotency key is used with conflicting payload."""
+
+
+class IdempotencyInProgressError(IdempotencyError):
+    """Raised when an idempotency key is currently being processed."""
+
+
 def utc_now_iso() -> str:
     """Return the current UTC timestamp in ISO 8601 format (e.g. '2026-10-16T17:20:00Z')."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

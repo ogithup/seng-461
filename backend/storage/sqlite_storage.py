@@ -6,14 +6,20 @@ Schema changes go in `MIGRATIONS`; `PRAGMA user_version` records how many have r
 """
 from __future__ import annotations
 
+import json
 import sqlite3
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, List, Optional
+from typing import Any, Callable, Iterator, List, Optional, Tuple
 
-from backend.storage.models import NotFoundError
+from backend.storage.models import (
+    IdempotencyConflictError,
+    IdempotencyInProgressError,
+    NotFoundError,
+)
 
 MIGRATIONS = [
     """
@@ -48,6 +54,28 @@ MIGRATIONS = [
         created_at TEXT NOT NULL
     );
     CREATE INDEX idx_executions_task ON executions(task_id);
+    CREATE TABLE IF NOT EXISTS idempotency_keys (
+        owner TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        key TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        status_code INTEGER,
+        response_json TEXT,
+        created_at REAL NOT NULL,
+        PRIMARY KEY (owner, scope, key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_idempotency_created ON idempotency_keys(created_at);
+    CREATE TABLE IF NOT EXISTS file_metadata (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        sha256 TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (project_id, path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_file_metadata_project ON file_metadata(project_id);
     """,
 ]
 
@@ -89,6 +117,17 @@ class ExecutionRecord:
     created_at: datetime
 
 
+@dataclass
+class FileMetadataRecord:
+    id: int
+    project_id: int
+    path: str
+    size_bytes: int
+    sha256: str
+    created_at: datetime
+    updated_at: datetime
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -121,11 +160,145 @@ class SQLiteStorage:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             applied = conn.execute("PRAGMA user_version").fetchone()[0]
+            if applied == 0:
+                # Check for legacy Sprint 1 schema without user_version
+                has_tasks = conn.execute(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='tasks'"
+                ).fetchone()[0]
+                if has_tasks > 0:
+                    cols = [r["name"] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()]
+                    if "description" in cols and "prompt" not in cols:
+                        self._migrate_legacy_schema(conn)
+                        applied = 1
             for number, script in enumerate(MIGRATIONS[applied:], start=applied + 1):
                 for statement in script.split(";"):
                     if statement.strip():
                         conn.execute(statement)
                 conn.execute("PRAGMA user_version = %d" % number)
+            # Ensure tables from migration 1 exist even if user_version was already 1
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS idempotency_keys (
+                    owner TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    status_code INTEGER,
+                    response_json TEXT,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (owner, scope, key)
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_idempotency_created ON idempotency_keys(created_at);")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS file_metadata (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    path TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE (project_id, path)
+                );
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_file_metadata_project ON file_metadata(project_id);")
+
+    def _migrate_legacy_schema(self, conn: sqlite3.Connection) -> None:
+        """Migrate legacy Sprint 1 schema (UUID text IDs, tasks.description, executions.success) to canonical schema."""
+        conn.execute("""
+            CREATE TABLE projects_v1 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE sessions_v1 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects_v1(id) ON DELETE CASCADE,
+                started_at TEXT NOT NULL
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE tasks_v1 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects_v1(id) ON DELETE CASCADE,
+                type TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending'
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE executions_v1 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id INTEGER NOT NULL REFERENCES tasks_v1(id) ON DELETE CASCADE,
+                command TEXT NOT NULL,
+                status TEXT NOT NULL,
+                stdout TEXT NOT NULL DEFAULT '',
+                stderr TEXT NOT NULL DEFAULT '',
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                reason TEXT,
+                created_at TEXT NOT NULL
+            );
+        """)
+
+        old_projects = conn.execute("SELECT id, name, created_at FROM projects ORDER BY rowid").fetchall()
+        project_id_map = {}
+        for p in old_projects:
+            cur = conn.execute(
+                "INSERT INTO projects_v1 (name, created_at) VALUES (?, ?)", (p["name"], p["created_at"])
+            )
+            project_id_map[p["id"]] = cur.lastrowid
+
+        old_tasks = conn.execute("SELECT id, project_id, description, status FROM tasks ORDER BY rowid").fetchall()
+        task_id_map = {}
+        for t in old_tasks:
+            new_pid = project_id_map.get(t["project_id"])
+            if new_pid is not None:
+                cur = conn.execute(
+                    "INSERT INTO tasks_v1 (project_id, type, prompt, status) VALUES (?, 'step', ?, ?)",
+                    (new_pid, t["description"], t["status"]),
+                )
+                task_id_map[t["id"]] = cur.lastrowid
+
+        has_exec = conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='executions'"
+        ).fetchone()[0]
+        if has_exec > 0:
+            old_execs = conn.execute(
+                "SELECT id, task_id, success, stdout, stderr, retry_count, duration_ms, created_at FROM executions ORDER BY rowid"
+            ).fetchall()
+            for e in old_execs:
+                new_tid = task_id_map.get(e["task_id"])
+                if new_tid is not None:
+                    status = "succeeded" if e["success"] == 1 else "failed"
+                    conn.execute(
+                        "INSERT INTO executions_v1 (task_id, command, status, stdout, stderr, retry_count, duration_ms, reason, created_at)"
+                        " VALUES (?, 'execution', ?, ?, ?, ?, ?, '', ?)",
+                        (
+                            new_tid,
+                            status,
+                            e["stdout"] or "",
+                            e["stderr"] or "",
+                            e["retry_count"] or 0,
+                            e["duration_ms"] or 0,
+                            e["created_at"],
+                        ),
+                    )
+
+        conn.execute("DROP TABLE IF EXISTS executions")
+        conn.execute("DROP TABLE IF EXISTS tasks")
+        conn.execute("DROP TABLE IF EXISTS projects")
+
+        conn.execute("ALTER TABLE projects_v1 RENAME TO projects")
+        conn.execute("ALTER TABLE sessions_v1 RENAME TO sessions")
+        conn.execute("ALTER TABLE tasks_v1 RENAME TO tasks")
+        conn.execute("ALTER TABLE executions_v1 RENAME TO executions")
+
+        conn.execute("CREATE INDEX idx_tasks_project ON tasks(project_id)")
+        conn.execute("CREATE INDEX idx_executions_task ON executions(task_id)")
+        conn.execute("PRAGMA user_version = 1")
 
     def _now(self) -> str:
         return self._clock().astimezone(timezone.utc).isoformat()
@@ -222,7 +395,13 @@ class SQLiteStorage:
         retry_count: int = 0,
         duration_ms: int = 0,
         reason: Optional[str] = None,
+        project_id: Optional[int] = None,
     ) -> ExecutionRecord:
+        task = self.get_task(task_id)
+        if task is None:
+            raise NotFoundError("task %s does not exist" % task_id)
+        if project_id is not None and task.project_id != project_id:
+            raise NotFoundError("task %s does not belong to project %s" % (task_id, project_id))
         created = self._now()
         new_id = self._insert(
             "INSERT INTO executions (task_id, command, status, stdout, stderr, retry_count,"
@@ -235,9 +414,16 @@ class SQLiteStorage:
             duration_ms, reason, self._when(created),
         )
 
-    def get_execution(self, execution_id: int) -> Optional[ExecutionRecord]:
+    def get_execution(self, execution_id: int, project_id: Optional[int] = None) -> Optional[ExecutionRecord]:
         with self._connect() as conn:
-            row = conn.execute("SELECT * FROM executions WHERE id = ?", (execution_id,)).fetchone()
+            if project_id is not None:
+                row = conn.execute(
+                    "SELECT e.* FROM executions e JOIN tasks t ON t.id = e.task_id"
+                    " WHERE e.id = ? AND t.project_id = ?",
+                    (execution_id, project_id),
+                ).fetchone()
+            else:
+                row = conn.execute("SELECT * FROM executions WHERE id = ?", (execution_id,)).fetchone()
         return self._execution(row) if row else None
 
     def update_execution(
@@ -290,3 +476,130 @@ class SQLiteStorage:
                 (project_id,),
             ).fetchone()
         return self._execution(row) if row else None
+
+    # file metadata
+
+    def save_file_metadata(
+        self,
+        project_id: int,
+        path: str,
+        size_bytes: int,
+        sha256: str = "",
+    ) -> FileMetadataRecord:
+        if self.get_project(project_id) is None:
+            raise NotFoundError("project %s does not exist" % project_id)
+        now = self._now()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, created_at FROM file_metadata WHERE project_id = ? AND path = ?",
+                (project_id, path),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE file_metadata SET size_bytes = ?, sha256 = ?, updated_at = ? WHERE id = ?",
+                    (size_bytes, sha256, now, row["id"]),
+                )
+                return FileMetadataRecord(
+                    row["id"], project_id, path, size_bytes, sha256,
+                    self._when(row["created_at"]), self._when(now),
+                )
+            new_id = conn.execute(
+                "INSERT INTO file_metadata (project_id, path, size_bytes, sha256, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (project_id, path, size_bytes, sha256, now, now),
+            ).lastrowid
+            return FileMetadataRecord(
+                new_id, project_id, path, size_bytes, sha256,
+                self._when(now), self._when(now),
+            )
+
+    def get_file_metadata(self, project_id: int, path: str) -> Optional[FileMetadataRecord]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM file_metadata WHERE project_id = ? AND path = ?", (project_id, path)
+            ).fetchone()
+        if not row:
+            return None
+        return FileMetadataRecord(
+            row["id"], row["project_id"], row["path"], row["size_bytes"], row["sha256"],
+            self._when(row["created_at"]), self._when(row["updated_at"]),
+        )
+
+    def list_file_metadata(self, project_id: int) -> List[FileMetadataRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM file_metadata WHERE project_id = ? ORDER BY path", (project_id,)
+            ).fetchall()
+        return [
+            FileMetadataRecord(
+                r["id"], r["project_id"], r["path"], r["size_bytes"], r["sha256"],
+                self._when(r["created_at"]), self._when(r["updated_at"]),
+            )
+            for r in rows
+        ]
+
+    # durable idempotency
+
+    def idempotency_begin(
+        self,
+        owner: str,
+        scope: str,
+        key: str,
+        fingerprint: str,
+        ttl_seconds: float = 86400.0,
+        max_entries: int = 1000,
+    ) -> Optional[Tuple[int, Any]]:
+        with self._connect() as conn:
+            now_sec = time.time()
+            conn.execute("DELETE FROM idempotency_keys WHERE created_at < ?", (now_sec - ttl_seconds,))
+
+            count = conn.execute("SELECT count(*) FROM idempotency_keys").fetchone()[0]
+            if count >= max_entries:
+                conn.execute(
+                    "DELETE FROM idempotency_keys WHERE (owner, scope, key) IN ("
+                    " SELECT owner, scope, key FROM idempotency_keys WHERE status_code IS NOT NULL"
+                    " ORDER BY created_at ASC LIMIT ?"
+                    ")",
+                    (max_entries // 10 or 1,),
+                )
+
+            row = conn.execute(
+                "SELECT * FROM idempotency_keys WHERE owner = ? AND scope = ? AND key = ?",
+                (owner, scope, key),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO idempotency_keys (owner, scope, key, fingerprint, created_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (owner, scope, key, fingerprint, now_sec),
+                )
+                return None
+
+            if row["fingerprint"] != fingerprint:
+                raise IdempotencyConflictError("This Idempotency-Key was already used with a different request.")
+            if row["status_code"] is None:
+                raise IdempotencyInProgressError("A request with this Idempotency-Key is still being processed.")
+
+            body = json.loads(row["response_json"]) if row["response_json"] is not None else None
+            return int(row["status_code"]), body
+
+    def idempotency_complete(
+        self,
+        owner: str,
+        scope: str,
+        key: str,
+        status_code: int,
+        response_body: Any,
+    ) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE idempotency_keys SET status_code = ?, response_json = ? WHERE owner = ? AND scope = ? AND key = ?",
+                (status_code, json.dumps(response_body), owner, scope, key),
+            )
+
+    def idempotency_abort(self, owner: str, scope: str, key: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM idempotency_keys WHERE owner = ? AND scope = ? AND key = ?",
+                (owner, scope, key),
+            )

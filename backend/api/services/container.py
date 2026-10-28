@@ -76,6 +76,6 @@ def build_services(
         tasks=tasks,
         chat=ChatService(storage, agent, projects, gate, runner, tasks, settings),
         actions=ActionService(storage, gate, runner, tasks),
-        idempotency=IdempotencyStore(),
+        idempotency=IdempotencyStore(storage=storage),
         limiter=RateLimiter(settings.rate_limit_per_minute),
     )
