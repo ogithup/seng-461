@@ -34,8 +34,13 @@ whole flow runs today. They are replaced, not edited, by the owners' modules:
 
 ```
 AGENT_IMPL=backend.agent.orchestrator:Orchestrator   # Bejan, when ready (called with no arguments)
-GENERATOR_IMPL=package.module:Generator              # Rana, used by the default SiteAgent
+GENERATOR_IMPL=backend.generator:WebsiteGenerator    # Rana, used by the default SiteAgent
 ```
+
+Rana's generator lives in `backend/generator/` (see its README). It accepts the spec below
+unchanged and adds optional fields (`tagline`, `footer`, section `kind`/`items`/`cta`/`id`,
+`theme.accent`/`theme.font`, `options.include_script`); `validate(files, spec)` may also be
+called with the spec to check the file set against it.
 
 ## Agent -> API: actions (`AgentAction`)
 
