@@ -13,7 +13,7 @@ uvicorn backend.main:app --reload                     # from the repo root; docs
 pytest                                                # integration tests in tests/integration
 ```
 
-Sprint 3 default: `backend.integration.site_agent.SiteAgent` plans one `write_file` per generated
+Sprint 3 default: `backend.agent.Orchestrator` (with `backend.generator.WebsiteGenerator`) plans one `write_file` per generated
 file, the bounded `WorkspaceExecutor` writes and verifies them, records live in SQLite, and **no
 shell command is ever executed**. See `docs/sprint3-contracts.md` for the module contracts.
 To integrate a real module, pass it to `build_services(storage=..., agent=..., executor=...)` in
@@ -22,7 +22,7 @@ To integrate a real module, pass it to `build_services(storage=..., agent=..., e
 | Env var | Default | Meaning |
 |---|---|---|
 | `DATABASE_PATH` | `<repo>/data/app.db` | SQLite file for projects, tasks, execution logs |
-| `AGENT_IMPL` | built-in `SiteAgent` | `package.module:Name` of an `AgentPort` factory |
+| `AGENT_IMPL` | built-in `Orchestrator` | `package.module:Name` of an `AgentPort` factory |
 | `GENERATOR_IMPL` | built-in generator | `package.module:Name` of a `SiteGeneratorPort` factory |
 | `WORKSPACE_ROOT` | `<repo>/workspaces` | Per-project folders: `project_<id>/` |
 | `CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Browser origins allowed (Vite dev server) |

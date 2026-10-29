@@ -29,12 +29,13 @@ Nothing reports success before the executor has finished and verified the write.
 | Frontend | Sam | existing REST API, unchanged |
 | Wiring, runner, tests | Oğuz | `backend/api/services/container.py`, `runner.py` |
 
-`backend/integration/` holds working stand-ins (`SiteAgent`, `ReferenceSiteGenerator`) so the
-whole flow runs today. They are replaced, not edited, by the owners' modules:
+The default build wires Bejan's `Orchestrator` to Rana's `WebsiteGenerator` (`backend/integration/`
+keeps `spec_for` and a minimal `ReferenceSiteGenerator` used for specs and tests). Either can be
+swapped without code changes:
 
 ```
 AGENT_IMPL=backend.agent.orchestrator:Orchestrator   # Bejan, when ready (called with no arguments)
-GENERATOR_IMPL=backend.generator:WebsiteGenerator    # Rana, used by the default SiteAgent
+GENERATOR_IMPL=backend.generator:WebsiteGenerator    # Rana, used by the default Orchestrator
 ```
 
 Rana's generator lives in `backend/generator/` (see its README). It accepts the spec below
@@ -59,7 +60,7 @@ called with the spec to check the file set against it.
 - Raising from `plan` or `next_action` fails the request or task. Messages are not shown to
   the browser, so do not rely on them reaching the user.
 - The agent keeps no state between requests or projects. A step prompt must be enough to
-  recompute the action (the default `SiteAgent` encodes file path, site type and title).
+  recompute the action (the `Orchestrator` (and the older `SiteAgent` in `backend/integration/`) encode file path, site type and title).
 
 ## API -> Executor
 

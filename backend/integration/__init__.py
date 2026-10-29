@@ -1,9 +1,9 @@
 """Glue between the modules (owner: Oğuz).
 
-`site_agent` and `reference_generator` are working stand-ins so the application generates
-real sites end to end before Bejan's model-backed agent and Rana's generator land. Each is
-replaced by setting AGENT_IMPL / GENERATOR_IMPL to "package.module:Name"; the ports they
-must satisfy are in backend/api/services/ports.py and docs/sprint3-contracts.md.
+`reference_generator` (spec_for + a minimal generator) is used by Bejan's Orchestrator for
+specs and as a test double. The application default is Orchestrator + Rana's WebsiteGenerator;
+AGENT_IMPL / GENERATOR_IMPL ("package.module:Name") swap either. Ports: backend/api/services/ports.py,
+docs/sprint3-contracts.md.
 """
 import importlib
 from typing import Any

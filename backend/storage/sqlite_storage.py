@@ -305,7 +305,8 @@ class SQLiteStorage:
 
     @staticmethod
     def _when(raw: str) -> datetime:
-        return datetime.fromisoformat(raw)
+        # Python < 3.11 cannot parse a trailing 'Z' (legacy rows use it).
+        return datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith("Z") else raw)
 
     @staticmethod
     def _task(row: sqlite3.Row) -> TaskRecord:
