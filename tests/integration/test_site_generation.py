@@ -6,7 +6,7 @@ from backend.api.app import create_app
 from backend.api.config import Settings
 from backend.api.services.container import build_services
 from backend.integration.reference_generator import ReferenceSiteGenerator
-from backend.integration.site_agent import SiteAgent
+from backend.agent import Orchestrator
 from tests.integration.fakes import ScriptedAgent
 
 
@@ -203,7 +203,7 @@ def test_invalid_generated_site_is_rejected_before_any_task_exists(make_app):
             del files["style.css"]
             return files
 
-    app = make_app(agent=SiteAgent(Broken()))
+    app = make_app(agent=Orchestrator(Broken()))
     pid = app.project()
     response = app.chat(pid, "Create a blog")
     assert response.status_code >= 400
@@ -219,7 +219,7 @@ def test_generator_errors_do_not_leak_details(make_app):
         def validate(self, files):
             return []
 
-    app = make_app(agent=SiteAgent(Exploding()))
+    app = make_app(agent=Orchestrator(Exploding()))
     pid = app.project()
     response = app.chat(pid, "Create a blog")
     assert response.status_code >= 400

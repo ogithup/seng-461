@@ -74,3 +74,17 @@ class RecordingExecutor:
         if self.run_error is not None:
             raise self.run_error
         return self.results.pop(0) if self.results else ok()
+
+
+class FixedPlanAgent:
+    """The Sprint 1/2 planner: the same two steps for any request, no actions.
+
+    Pinned by the persistence and API-flow tests so they exercise storage and the runner
+    without depending on what the real agent plans.
+    """
+
+    def plan(self, user_request: str) -> List[str]:
+        return ["create project", "create index.html"]
+
+    def next_action(self, task: Any, last_result: Any) -> Any:
+        return None

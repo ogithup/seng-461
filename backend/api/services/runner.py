@@ -5,6 +5,7 @@ away (allowlisted) or parks the task until a human decides. The loop is bounded:
 a task may take at most `max_actions_per_task` actions and tolerate at most
 `max_repair_attempts` failed ones beyond the first, then it fails instead of looping.
 """
+import hashlib
 import logging
 import threading
 from contextlib import contextmanager
@@ -147,6 +148,17 @@ class TaskRunner:
                 actions_taken += 1
                 if not last_result.success:
                     failures += 1
+                elif hasattr(self._storage, "save_file_metadata"):
+                    try:
+                        content_bytes = action.content.encode("utf-8")
+                        digest = hashlib.sha256(content_bytes).hexdigest()[:12]
+                        self._storage.save_file_metadata(
+                            project_id, action.path, len(content_bytes), digest
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not save file metadata for project %d: %s", project_id, action.path
+                        )
                 continue
 
             if action.requires_approval or not self._is_allowed(action.command):

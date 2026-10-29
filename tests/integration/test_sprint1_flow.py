@@ -3,7 +3,7 @@
 The Sprint 1 target: Create a blog -> frontend -> API -> fake agent -> fake task -> DB -> task shown."""
 
 
-from backend.agent import Orchestrator
+from tests.integration.fakes import FixedPlanAgent
 
 
 def test_health(make_app):
@@ -29,7 +29,7 @@ def test_projects_can_be_listed_and_fetched(make_app):
 
 
 def test_chat_with_mock_agent_creates_tasks_that_get_tasks_returns(make_app):
-    app = make_app(agent=Orchestrator())
+    app = make_app(agent=FixedPlanAgent())
     pid = app.project()
 
     chat = app.chat(pid, "Create a blog")
@@ -57,7 +57,7 @@ def test_new_project_has_no_tasks_and_is_idle(make_app):
 
 
 def test_tasks_accumulate_across_chat_requests(make_app):
-    app = make_app(agent=Orchestrator())
+    app = make_app(agent=FixedPlanAgent())
     pid = app.project()
     app.chat(pid, "first")
     second = app.chat(pid, "second").json()

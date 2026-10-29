@@ -1,6 +1,6 @@
 """Wires the services together.
 
-`build_services()` with no arguments gives the site agent (see `backend/integration`),
+`build_services()` with no arguments gives Bejan's `Orchestrator` with Rana's `WebsiteGenerator`,
 SQLite storage at `Settings.database_path` (env DATABASE_PATH) and the bounded
 `WorkspaceExecutor` (file writes only; no shell). To integrate a real
 module, pass it in:
@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Optional
 
+from backend.agent import Orchestrator
 from backend.api.config import Settings
 from backend.api.services.actions import ActionService
 from backend.api.services.approvals import ApprovalGate
@@ -24,16 +25,16 @@ from backend.api.services.projects import ProjectService
 from backend.api.services.runner import TaskRunner
 from backend.api.services.tasks import TaskService
 from backend.api.services.workspace import WorkspaceService
+from backend.generator import WebsiteGenerator
 from backend.integration import load_object
-from backend.integration.site_agent import SiteAgent
 from backend.storage.sqlite_storage import SQLiteStorage
 
 
 def _default_agent(settings: Settings) -> AgentPort:
     if settings.agent_impl:
         return load_object(settings.agent_impl)()
-    generator = load_object(settings.generator_impl)() if settings.generator_impl else None
-    return SiteAgent(generator)
+    generator = (load_object(settings.generator_impl) if settings.generator_impl else WebsiteGenerator)()
+    return Orchestrator(generator)
 
 
 @dataclass
@@ -76,6 +77,6 @@ def build_services(
         tasks=tasks,
         chat=ChatService(storage, agent, projects, gate, runner, tasks, settings),
         actions=ActionService(storage, gate, runner, tasks),
-        idempotency=IdempotencyStore(),
+        idempotency=IdempotencyStore(storage=storage),
         limiter=RateLimiter(settings.rate_limit_per_minute),
     )
