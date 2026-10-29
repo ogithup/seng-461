@@ -31,6 +31,14 @@ const FRIENDLY: Record<string, string> = {
   validation_error: "The request wasn't valid.",
   request_too_large: "That message is too large.",
   internal_error: "Something went wrong on the server.",
+  action_not_found: "That approval request no longer exists.",
+  action_expired: "This approval request has expired. Send the request again if you still need it.",
+  action_already_decided: "Someone already decided on this command.",
+  approval_mismatch: "The pending command changed since you looked at it. Review it again.",
+  file_not_found: "That file is no longer in the project.",
+  path_not_allowed: "That file is outside the project workspace.",
+  file_too_large: "That file is too large to show here.",
+  unsupported_file_type: "Only text files can be shown here.",
 };
 
 export function describeError(err: unknown): string {

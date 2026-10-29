@@ -1,19 +1,20 @@
 import type { ProjectState, RunStatus, TaskStatus } from "../services/types";
+import { ApprovalCard } from "./ApprovalCard";
 
 const RUN_LABEL: Record<RunStatus, string> = {
   idle: "Idle",
   running: "Working",
-  waiting_for_approval: "Waiting for approval",
+  waiting_for_approval: "Awaiting approval",
   completed: "Completed",
   failed: "Failed",
   cancelled: "Cancelled",
 };
 
-const TASK_LABEL: Record<TaskStatus, string> = {
+export const TASK_LABEL: Record<TaskStatus, string> = {
   pending: "Pending",
   running: "Running",
-  waiting_for_approval: "Needs approval",
-  succeeded: "Done",
+  waiting_for_approval: "Awaiting approval",
+  succeeded: "Completed",
   failed: "Failed",
   skipped: "Skipped",
   cancelled: "Cancelled",
@@ -22,13 +23,17 @@ const TASK_LABEL: Record<TaskStatus, string> = {
 interface Props {
   state: ProjectState | null;
   sending: boolean;
+  deciding: boolean;
+  onApprove: () => void;
+  onReject: () => void;
 }
 
-/** Shows whether the agent is working, finished or stuck, and every task in the project. */
-export function StatusPanel({ state, sending }: Props) {
+/** Whether the agent is working, finished or stuck; every task; and any pending approval. */
+export function StatusPanel({ state, sending, deciding, onApprove, onReject }: Props) {
   const status: RunStatus = sending ? "running" : state?.status ?? "idle";
   const tasks = state?.tasks ?? [];
   const done = tasks.filter((t) => t.status === "succeeded").length;
+  const failed = tasks.filter((t) => t.status === "failed").length;
 
   return (
     <section className="card status-panel" aria-label="Agent status">
@@ -40,13 +45,22 @@ export function StatusPanel({ state, sending }: Props) {
         {tasks.length > 0 && (
           <span className="muted">
             {done}/{tasks.length} tasks done
+            {failed > 0 && ` · ${failed} failed`}
           </span>
         )}
       </div>
 
       {state?.pending_action && (
-        <div className="notice" role="status">
-          A command is waiting for approval: <code>{state.pending_action.command}</code>
+        <ApprovalCard
+          action={state.pending_action}
+          busy={deciding}
+          onApprove={onApprove}
+          onReject={onReject}
+        />
+      )}
+      {!sending && state?.status === "failed" && (
+        <div className="notice notice-bad" role="status">
+          The run stopped after a failure. The execution log shows what went wrong.
         </div>
       )}
 
