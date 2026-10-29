@@ -138,3 +138,33 @@ def test_cors_allows_the_frontend_origin_only(make_app):
         headers={"Origin": "http://evil.example", "Access-Control-Request-Method": "POST"},
     )
     assert "access-control-allow-origin" not in denied.headers
+
+
+class _Declined(Exception):
+    code = "unsupported_request"
+
+    def __init__(self, user_message):
+        super().__init__("internal detail: key=abc123")
+        self.user_message = user_message
+
+
+def test_agent_declining_a_request_is_a_422_with_its_user_message(make_app):
+    agent = ScriptedAgent([], plan_error=_Declined("Online shops are not supported yet."))
+    app = make_app(agent=agent)
+    pid = app.project()
+    response = app.chat(pid, "Create an online shop")
+    assert response.status_code == 422
+    assert error_of(response)["code"] == "unsupported_request"
+    assert error_of(response)["message"] == "Online shops are not supported yet."
+    assert error_of(response)["retryable"] is False
+    assert "abc123" not in response.text
+    assert app.client.get("/api/tasks", params={"project_id": pid}).json()["tasks"] == []
+
+
+def test_a_declined_request_without_a_usable_message_gets_a_generic_one(make_app):
+    app = make_app(agent=ScriptedAgent([], plan_error=_Declined("bad\x00text")))
+    pid = app.project()
+    response = app.chat(pid, "Create an online shop")
+    assert response.status_code == 422
+    assert "not supported" in error_of(response)["message"]
+    assert "abc123" not in response.text
