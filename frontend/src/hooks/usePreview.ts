@@ -26,7 +26,8 @@ export function usePreview(api: AgentApi, projectId: number | null, stamp: strin
   useEffect(() => {
     if (projectId === null || paused) return;
     let cancelled = false;
-    setPreview((p) => (p.status === "ready" ? p : { status: "loading" }));
+    // Background checks keep what is on screen; only a retry after an error shows "loading".
+    setPreview((p) => (p.status === "error" ? { status: "loading" } : p));
     api.getPreview(projectId).then(
       (info) => {
         if (cancelled) return;

@@ -198,6 +198,23 @@ describe("App — files, preview and log", () => {
     expect(getPreview).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps panels steady while a background refresh is pending", async () => {
+    const api = new MockAgentApi(0);
+    render(<App api={api} />);
+    const user = await startProject();
+    expect(await screen.findByText(/No preview yet/)).toBeInTheDocument();
+    expect(await screen.findByText("No files generated yet.")).toBeInTheDocument();
+    const never = () => new Promise<never>(() => {});
+    vi.spyOn(api, "getPreview").mockImplementation(never);
+    vi.spyOn(api, "listFiles").mockImplementation(never);
+
+    await send(user, "run npm install", /I need your approval/); // state changes → refetch
+
+    expect(within(region("Preview")).getByText(/No preview yet/)).toBeInTheDocument();
+    expect(within(region("Generated files")).getByText("No files generated yet.")).toBeInTheDocument();
+    expect(screen.queryByText(/Loading (preview|files)/)).not.toBeInTheDocument();
+  });
+
   it("logs every file write", async () => {
     render(<App api={new MockAgentApi(0)} />);
     const user = await startProject();
