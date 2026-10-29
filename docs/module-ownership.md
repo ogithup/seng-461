@@ -1,12 +1,15 @@
 # Module ownership
 
 ```
-frontend/**            → Rana
-backend/api/**         → Oğuz   (also: integration owner, owns docs/api-contracts.md)
-backend/agent/**       → Bejan
-backend/execution/**   → Sam
-backend/storage/**     → Koray
+frontend/**              → Sam
+backend/api/**           → Oğuz   (integration owner; docs/*contracts*.md, backend/integration/**)
+backend/agent/**         → Bejan
+backend/generator/**     → Rana   (also the WebsiteSpec definition)
+backend/storage/**       → Koray
+backend/api/services/executor.py → Oğuz (the only code that writes generated files)
 ```
+
+(Current Sprint 4 branches and shared-file rules: `docs/sprint4-contracts.md`.)
 
 Rules of the road:
 
