@@ -1,5 +1,16 @@
 import { ApiError } from "./errors";
-import type { AgentApi, ChatResponse, Project, ProjectCreated, ProjectState } from "./types";
+import type {
+  ActionDecisionResponse,
+  AgentApi,
+  ChatResponse,
+  FileContent,
+  FileList,
+  LogsPage,
+  PreviewInfo,
+  Project,
+  ProjectCreated,
+  ProjectState,
+} from "./types";
 
 type Fetch = typeof fetch;
 
@@ -54,7 +65,49 @@ export class HttpAgentApi implements AgentApi {
   }
 
   getTasks(projectId: number) {
-    return this.request<ProjectState>("GET", `/tasks?project_id=${encodeURIComponent(projectId)}`);
+    return this.request<ProjectState>("GET", `/tasks?${query({ project_id: projectId })}`);
+  }
+
+  approveAction(actionId: number, commandHash: string) {
+    return this.decide(actionId, "approve", commandHash);
+  }
+
+  rejectAction(actionId: number, commandHash: string) {
+    return this.decide(actionId, "reject", commandHash);
+  }
+
+  getLogs(projectId: number, afterId = 0, limit = 100) {
+    return this.request<LogsPage>(
+      "GET",
+      `/logs?${query({ project_id: projectId, after_id: afterId, limit })}`,
+    );
+  }
+
+  listFiles(projectId: number) {
+    return this.request<FileList>("GET", `/files?${query({ project_id: projectId })}`);
+  }
+
+  getFileContent(projectId: number, path: string) {
+    return this.request<FileContent>("GET", `/files/content?${query({ project_id: projectId, path })}`);
+  }
+
+  async getPreview(projectId: number) {
+    const info = await this.request<PreviewInfo>("GET", `/preview?${query({ project_id: projectId })}`);
+    // The API answers with a path ("/api/preview/1/"); the iframe needs it on the API's origin.
+    return info.url ? { ...info, url: this.absolute(info.url) } : info;
+  }
+
+  private decide(actionId: number, decision: "approve" | "reject", commandHash: string) {
+    return this.request<ActionDecisionResponse>(
+      "POST",
+      `/actions/${encodeURIComponent(actionId)}/${decision}`,
+      { command_hash: commandHash },
+    );
+  }
+
+  private absolute(url: string): string {
+    const page = typeof window !== "undefined" ? window.location.href : "http://localhost/";
+    return new URL(url, new URL(this.baseUrl, page)).toString();
   }
 
   private async request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
@@ -84,6 +137,12 @@ export class HttpAgentApi implements AgentApi {
       await this.sleep(retryAfterMs(res) ?? this.retryDelayMs);
     }
   }
+}
+
+function query(params: Record<string, string | number>): string {
+  return new URLSearchParams(
+    Object.entries(params).map(([k, v]) => [k, String(v)]),
+  ).toString();
 }
 
 async function readErrorBody(res: Response) {

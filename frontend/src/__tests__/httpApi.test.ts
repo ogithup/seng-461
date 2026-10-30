@@ -83,6 +83,59 @@ describe("HttpAgentApi", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("approves and rejects with the command_hash the human saw", async () => {
+    const decided = { project_id: 1, status: "failed", tasks: [], pending_action: null, message: "m" };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(json(200, { ...decided, action_id: 7, decision: "approved" }))
+      .mockResolvedValueOnce(json(200, { ...decided, action_id: 8, decision: "rejected" }));
+    const api = new HttpAgentApi({ baseUrl: "http://api.test/api", fetchImpl });
+    const hash = "a".repeat(64);
+
+    await api.approveAction(7, hash);
+    await api.rejectAction(8, hash);
+
+    const [approveUrl, approveInit] = fetchImpl.mock.calls[0];
+    expect(approveUrl).toBe("http://api.test/api/actions/7/approve");
+    expect(approveInit.method).toBe("POST");
+    expect(JSON.parse(approveInit.body)).toEqual({ command_hash: hash });
+    expect(fetchImpl.mock.calls[1][0]).toBe("http://api.test/api/actions/8/reject");
+  });
+
+  it("reads logs, files and file contents with encoded query parameters", async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(json(200, {})));
+    const api = new HttpAgentApi({ baseUrl: "http://api.test/api", fetchImpl });
+
+    await api.getLogs(2, 5, 500);
+    await api.listFiles(2);
+    await api.getFileContent(2, "pages/a b&c.html");
+
+    expect(fetchImpl.mock.calls.map((c) => c[0])).toEqual([
+      "http://api.test/api/logs?project_id=2&after_id=5&limit=500",
+      "http://api.test/api/files?project_id=2",
+      "http://api.test/api/files/content?project_id=2&path=pages%2Fa+b%26c.html",
+    ]);
+  });
+
+  it("resolves the preview path against the API's origin", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(json(200, { project_id: 4, status: "static", url: "/api/preview/4/" }))
+      .mockResolvedValueOnce(json(200, { project_id: 5, status: "unavailable", url: null }));
+    const api = new HttpAgentApi({ baseUrl: "http://localhost:8000/api", fetchImpl });
+
+    expect((await api.getPreview(4)).url).toBe("http://localhost:8000/api/preview/4/");
+    expect(await api.getPreview(5)).toEqual({ project_id: 5, status: "unavailable", url: null });
+    expect(fetchImpl.mock.calls[0][0]).toBe("http://localhost:8000/api/preview?project_id=4");
+  });
+
+  it("explains file and approval errors in plain words", () => {
+    const err = (code: string) => new ApiError(409, { code, message: "raw" });
+    expect(describeError(err("action_expired"))).toMatch(/expired/);
+    expect(describeError(err("approval_mismatch"))).toMatch(/changed since you looked/);
+    expect(describeError(err("unsupported_file_type"))).toMatch(/Only text files/);
+  });
+
   it("reports an unreachable backend as network_error", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
     const api = new HttpAgentApi({ baseUrl: "http://api.test/api", fetchImpl, maxRetries: 0 });
