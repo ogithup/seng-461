@@ -90,3 +90,55 @@ python -m pytest tests/generator
 
 `tests/generator/specs.py` holds three example specs (blog, portfolio, landing) used by the tests.
 `tests/integration/test_website_generator_api.py` runs the whole API with this generator.
+
+---
+
+# Sprint 4 (Rana, branch `feature/sprint4-generator`)
+
+No WebsiteSpec field was added or made required; everything below uses the approved v1 fields
+(`docs/sprint4-contracts.md` §3).
+
+## Page selection for the interpreter (Bejan)
+
+```python
+from backend.generator import WebsiteGenerator, starter_spec, available_pages
+
+spec = starter_spec("landing", "Acme", pages=["pricing", "faq"],
+                    theme={"primary": "#1e3a8a", "font": "serif"})
+files = WebsiteGenerator().build(spec)
+```
+
+| Type | `available_pages()` | Default (`pages=None`, unchanged from Sprint 3) |
+|---|---|---|
+| blog | index, archive, about, contact | index, archive, about |
+| portfolio | index, projects, about, contact | index, projects, contact |
+| landing | index, features, pricing, faq, contact | index |
+
+`index` is always included and navigation keeps the catalogue order, so the same selection in
+any order gives the same files. Links to pages that were not selected are removed. An unknown
+page raises `ValueError` naming the available ones. `theme` and `tagline` are passed through
+and checked by `normalize_spec`. The result always passes `normalize_spec`, so `interpret()` can
+return it directly, and `spec_for()` can be retired once the interpreter uses it.
+
+## Audit (task R1) and fixes
+
+| # | Problem found | Fix |
+|---|---|---|
+| 1 | Only fixed starter sites; the interpreter could not choose pages | `starter_spec(pages=, theme=, tagline=)`, a page catalogue per type, `available_pages()` |
+| 2 | A `hero` section that was not first produced a second `<h1>`, so the build failed | later heroes render with `<h2>` (`.hero-secondary`) |
+| 3 | Two sections with the same heading were rejected (duplicate anchor) | generated anchors are made unique (`notes`, `notes-2`); explicit duplicate ids are still rejected |
+| 4 | A heading such as "Content" produced `id="content"`, clashing with the skip-link target | `content` and `site-nav` are reserved; generated ids avoid them, explicit ones are rejected |
+| 5 | `items` on `hero` and `cta` sections were silently dropped | rendered as a card grid |
+| 6 | A page over the executor's 200 000-byte limit failed only while writing, after earlier files were written | the validator rejects oversized files (and more than 20 files) before any action is returned |
+| 7 | The validator did not detect duplicate element ids | reported per page |
+
+## Tests
+
+`tests/generator/test_sprint4.py`: every page selection of every type, defaults, determinism,
+theme, meaningful differences, invalid pages and themes, missing content, duplicate and invalid
+output paths, oversized output, and each audit fix. `pytest tests/generator` needs no API.
+
+## Known limits
+
+- Starter content is placeholder text; real content comes from the spec (or a future LLM).
+- `lang="en"` is fixed; a language field would need a contract change.

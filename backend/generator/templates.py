@@ -3,8 +3,9 @@
 Everything here is a pure function of a *normalized* spec (see `spec.normalize_spec`): no
 clock, no randomness, no I/O. All user text goes through `html.escape`.
 """
+import copy
 from html import escape
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # ---------------------------------------------------------------------------------------
 # Starter specs: a complete, meaningful site per type that callers can edit or extend.
@@ -41,7 +42,13 @@ _STARTERS: Dict[str, Dict[str, Any]] = {
                 {"heading": "About this blog",
                  "body": "A short note about who writes here and what to expect.\n\n"
                          "Posts appear when there is something worth sharing, usually every week or two."},
-                {"heading": "Get in touch", "body": "Replies and ideas are always welcome."},
+                {"heading": "Get in touch", "body": "Replies and ideas are always welcome.",
+                 "cta": {"label": "Contact", "href": "contact.html"}},
+            ]},
+            {"slug": "contact", "title": "Contact", "sections": [
+                {"kind": "cta", "heading": "Write to me",
+                 "body": "Questions, corrections and post ideas are all welcome.",
+                 "cta": {"label": "Send an email", "href": "mailto:hello@example.com"}},
             ]},
         ],
     },
@@ -73,6 +80,14 @@ _STARTERS: Dict[str, Dict[str, Any]] = {
                 {"kind": "text", "heading": "Skills",
                  "body": "HTML, CSS, JavaScript, Python, accessibility and responsive design."},
             ]},
+            {"slug": "about", "title": "About", "sections": [
+                {"heading": "About me",
+                 "body": "A few sentences about my background, what I enjoy working on and how I work."},
+                {"heading": "Experience", "items": [
+                    {"title": "Current role", "meta": "Now", "body": "What I do today."},
+                    {"title": "Previous role", "meta": "Before", "body": "What I learned there."},
+                ]},
+            ]},
             {"slug": "contact", "title": "Contact", "sections": [
                 {"kind": "cta", "heading": "Say hello",
                  "body": "The best way to reach me is by email. I reply within a few days.",
@@ -96,19 +111,109 @@ _STARTERS: Dict[str, Dict[str, Any]] = {
                  "body": "Sign up today and be running in minutes.",
                  "cta": {"label": "Contact us", "href": "mailto:hello@example.com"}},
             ]},
+            {"slug": "features", "title": "Features", "sections": [
+                {"kind": "features", "heading": "Everything you need", "items": [
+                    {"title": "Quick setup", "body": "Start in minutes with sensible defaults."},
+                    {"title": "Works everywhere", "body": "On phones, tablets and desktops."},
+                    {"title": "Private by default", "body": "Your data stays yours."},
+                ]},
+            ]},
+            {"slug": "pricing", "title": "Pricing", "sections": [
+                {"kind": "cards", "heading": "Simple pricing", "body": "Pick the plan that fits.",
+                 "items": [
+                     {"title": "Starter", "meta": "Free", "body": "For trying things out."},
+                     {"title": "Pro", "meta": "Monthly plan", "body": "For individuals who need more."},
+                     {"title": "Team", "meta": "Contact us", "body": "For groups working together."},
+                 ]},
+            ]},
+            {"slug": "faq", "title": "FAQ", "sections": [
+                {"heading": "Frequently asked questions", "items": [
+                    {"title": "How long does setup take?", "body": "A few minutes."},
+                    {"title": "Can I cancel any time?", "body": "Yes, there is no lock-in."},
+                ]},
+            ]},
+            {"slug": "contact", "title": "Contact", "sections": [
+                {"kind": "cta", "heading": "Talk to us", "body": "We answer every message within a day.",
+                 "cta": {"label": "Send an email", "href": "mailto:hello@example.com"}},
+            ]},
         ],
     },
 }
 
+# Pages a starter site has when the caller does not choose (the Sprint 3 starters, unchanged).
+DEFAULT_PAGES: Dict[str, Tuple[str, ...]] = {
+    "blog": ("index", "archive", "about"),
+    "portfolio": ("index", "projects", "contact"),
+    "landing": ("index",),
+}
 
-def starter_spec(site_type: str, title: str) -> Dict[str, Any]:
-    """A complete example spec for `site_type` (a fresh copy every call)."""
-    import copy
 
+def available_pages(site_type: str) -> Tuple[str, ...]:
+    """Page slugs a starter site of `site_type` can include, in navigation order."""
     if site_type not in _STARTERS:
         raise ValueError("unknown site type %r" % (site_type,))
-    spec = copy.deepcopy(_STARTERS[site_type])
-    spec.update({"site_type": site_type, "title": title})
+    return tuple(p["slug"] for p in _STARTERS[site_type]["pages"])
+
+
+def _drop_dead_links(pages: List[Dict[str, Any]]) -> None:
+    """Remove item links and buttons that point at a page that was not selected."""
+    kept = {p["slug"] for p in pages}
+
+    def dead(href: Any) -> bool:
+        if not isinstance(href, str) or ".html" not in href:
+            return False
+        return href.split(".html", 1)[0] not in kept
+
+    for page in pages:
+        for section in page["sections"]:
+            if section.get("cta") and dead(section["cta"].get("href")):
+                del section["cta"]
+            for item in section.get("items", ()):
+                if dead(item.get("link")):
+                    del item["link"]
+
+
+def starter_spec(
+    site_type: str,
+    title: str,
+    pages: Optional[Sequence[str]] = None,
+    theme: Optional[Dict[str, Any]] = None,
+    tagline: Optional[str] = None,
+) -> Dict[str, Any]:
+    """A complete, valid spec for `site_type` (a fresh copy every call).
+
+    `pages` selects starter pages by slug (see `available_pages`); `index` is always
+    included and the navigation keeps the catalogue order, so the same selection always
+    gives the same site. Links to pages left out are removed. `theme` and `tagline` are
+    passed through unchanged and checked by `normalize_spec` like any other spec field.
+    Raises ValueError for an unknown site type or page.
+    """
+    if site_type not in _STARTERS:
+        raise ValueError("unknown site type %r" % (site_type,))
+    catalogue = available_pages(site_type)
+    if pages is None:
+        wanted = set(DEFAULT_PAGES[site_type])
+    else:
+        if isinstance(pages, str) or not all(isinstance(p, str) for p in pages):
+            raise ValueError("pages must be a list of page slugs")
+        unknown = sorted(set(pages) - set(catalogue))
+        if unknown:
+            raise ValueError(
+                "unknown %s page(s): %s (available: %s)"
+                % (site_type, ", ".join(unknown), ", ".join(catalogue))
+            )
+        wanted = set(pages) | {"index"}
+
+    starter = copy.deepcopy(_STARTERS[site_type])
+    spec: Dict[str, Any] = {
+        "site_type": site_type,
+        "title": title,
+        "tagline": starter["tagline"] if tagline is None else tagline,
+        "pages": [p for p in starter["pages"] if p["slug"] in wanted],
+    }
+    _drop_dead_links(spec["pages"])
+    if theme is not None:
+        spec["theme"] = copy.deepcopy(theme)
     return spec
 
 
@@ -145,31 +250,41 @@ def _item(item: Dict[str, Any], tag: str) -> str:
     return '<%s class="card"><h3>%s</h3>%s%s</%s>' % (tag, title, meta, _paragraphs(item["body"]), tag)
 
 
-def _section(section: Dict[str, Any], page_h1: str) -> str:
+def _items_html(kind: str, items: List[Dict[str, Any]]) -> str:
+    if not items:
+        return ""
+    if kind == "posts":
+        return '<div class="post-list">%s</div>' % "".join(_item(i, "article") for i in items)
+    if kind == "text":
+        return '<ul class="item-list">%s</ul>' % "".join(_item(i, "li") for i in items)
+    grid = "cards" if kind in ("hero", "cta") else kind
+    return '<div class="grid grid-%s">%s</div>' % (grid, "".join(_item(i, "article") for i in items))
+
+
+def _section(section: Dict[str, Any], page_h1: str, first: bool = True) -> str:
     kind = section["kind"]
     anchor = ' id="%s"' % section["id"] if section["id"] else ""
+    items = _items_html(kind, section["items"])
     if kind == "hero":
+        if first:
+            # The opening hero carries the page's single <h1>; the heading becomes its lead.
+            return (
+                '<section class="hero"%s>\n<h1>%s</h1>\n<p class="lead">%s</p>\n%s%s%s\n</section>'
+                % (anchor, page_h1, escape(section["heading"]), _paragraphs(section["body"]), items,
+                   _button(section["cta"]))
+            )
+        # A later hero keeps its look but uses <h2>, so the page still has exactly one <h1>.
         return (
-            '<section class="hero"%s>\n<h1>%s</h1>\n<p class="lead">%s</p>\n%s%s\n</section>'
-            % (anchor, page_h1, escape(section["heading"]), _paragraphs(section["body"]),
+            '<section class="hero hero-secondary"%s>\n<h2>%s</h2>\n%s%s%s\n</section>'
+            % (anchor, escape(section["heading"]), _paragraphs(section["body"]), items,
                _button(section["cta"]))
         )
     if kind == "cta":
         return (
-            '<section class="cta-band"%s>\n<h2>%s</h2>\n%s%s\n</section>'
-            % (anchor, escape(section["heading"]), _paragraphs(section["body"]),
+            '<section class="cta-band"%s>\n<h2>%s</h2>\n%s%s%s\n</section>'
+            % (anchor, escape(section["heading"]), _paragraphs(section["body"]), items,
                _button(section["cta"], " button-light"))
         )
-    items = ""
-    if section["items"]:
-        if kind == "posts":
-            items = '<div class="post-list">%s</div>' % "".join(_item(i, "article") for i in section["items"])
-        elif kind == "text":
-            items = '<ul class="item-list">%s</ul>' % "".join(_item(i, "li") for i in section["items"])
-        else:
-            items = '<div class="grid grid-%s">%s</div>' % (
-                kind, "".join(_item(i, "article") for i in section["items"])
-            )
     return '<section class="block block-%s"%s>\n<h2>%s</h2>\n%s%s%s\n</section>' % (
         kind, anchor, escape(section["heading"]), _paragraphs(section["body"]), items,
         _button(section["cta"]),
@@ -194,7 +309,7 @@ def render_page(spec: Dict[str, Any], page: Dict[str, Any]) -> str:
             '\n<p class="lead">%s</p>' % escape(spec["tagline"]) if is_index and spec["tagline"] else ""
         )
         intro = '<div class="page-intro">\n<h1>%s</h1>%s\n</div>\n' % (page_h1, tagline)
-    body = "\n".join(_section(s, page_h1) for s in sections)
+    body = "\n".join(_section(s, page_h1, i == 0) for i, s in enumerate(sections))
     script = '\n  <script src="script.js" defer></script>' if spec["options"]["include_script"] else ""
     toggle = (
         '\n    <button class="nav-toggle" type="button" aria-expanded="false" '
@@ -303,6 +418,8 @@ h3 { font-size: 1.15rem; margin: 0 0 6px; }
 .cta-band { margin: 0 0 40px; padding: 32px clamp(20px, 4vw, 40px); border-radius: 16px;
   background: var(--primary); color: var(--on-primary); text-align: center; }
 .cta-band a:not(.button) { color: var(--on-primary); }
+.cta-band .card { color: var(--text); text-align: left; }
+.cta-band .card a { color: var(--primary); }
 
 .grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-top: 16px; }
 .card { padding: 20px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); }
