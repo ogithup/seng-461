@@ -1,65 +1,15 @@
-# Agent module - Sprint 1 (Bejan)
+# Agent module
 
-This module demonstrates the connection between user requests and task records.
-It uses only the Python standard library and needs no model credentials.
+The rule-based interpreter turns a request into a validated generator spec for a blog, portfolio, or landing page. It uses the Sprint 3 planner for site type and title; absent details use its default title and Rana's starter content and theme. The default blog retains the Sprint 3 file set; request `page: Archive` to add an archive page. Known unsupported requests such as online shops raise `UnsupportedRequest`; the API translates that exception to a user-facing 422. No model credentials are required.
 
-```python
-from backend.agent import Orchestrator
+Explicit fields use semicolon-separated labels, for example:
 
-agent = Orchestrator()
-assert agent.plan("Create a blog") == ["create project", "create index.html"]
-assert agent.next_action({"prompt": "create index.html"}, None) is None
+```
+Create a landing page for Acme; page: Pricing; section: Benefits; primary: #123456; accent: #abcdef; font: serif
 ```
 
-`planner.py` returns the same two steps for every non-empty string request.
-`orchestrator.py` implements the API's `AgentPort` methods. Returning `None`
-from `next_action` means there is no command to perform for this fake step.
-The API creates the records and marks these simulated steps succeeded. This
-does not mean an actual project or HTML file was generated.
+`page`/`pages` add named pages (comma-separated); `section` adds a heading to the home page. New pages and sections receive placeholder body text. `primary` and `accent` require six-digit hex colors; `font` is `sans`, `serif`, or `mono`. Invalid values are rejected by `normalize_spec`. This interpreter recognizes these explicit labels and simple type/title cues; it does not interpret arbitrary prose as a feature specification.
 
-`action_schema.py` describes future command proposals using the API's field
-names; it is a typing contract, not runtime validation or permission enforcement.
-`prompts.py` and `state.py` document extension points for later sprints.
-There are no shell calls, file writes, database access, model calls, or automatic
-repairs in this agent. The API runner remains responsible for task transitions.
+`Orchestrator(generator=None, interpreter=None)` accepts a callable interpreter returning a spec. It validates that output, generates a plan with one write task per file, and reconstructs each spec from the task prompt without in-memory state. It accepts legacy prompts and the previous encoded-spec prompt format. The executor performs and verifies writes; the agent does not access the filesystem, database, shell, or network.
 
-## Run the connected demo
-
-From the repository root in PowerShell:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r backend/requirements-dev.txt
-.\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload
-```
-
-Open `http://localhost:8000/docs` and:
-
-1. Call `POST /api/projects` with `{"name": "Blog"}` and copy the returned ID.
-2. Call `POST /api/chat` with `{"project_id": 1, "message": "Create a blog"}`
-   using that ID.
-3. Call `GET /api/tasks?project_id=1` using that ID. The two task descriptions
-   are available for the frontend to display, with status `succeeded`.
-
-The default service container now selects this agent; custom agents can still
-be injected through `build_services(agent=...)`.
-
-Run verification with:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q
-```
-
-## Integration limits and later work
-
-The current API stores tasks in memory. Koray's SQLite branch still needs
-alignment with `StoragePort` (package location, IDs, method signatures,
-sessions, and execution approval fields). Rana's frontend is also separate.
-This branch verifies API -> agent -> in-memory storage -> task response;
-the full frontend -> SQLite demonstration is a team integration milestone.
-
-The October 19 decision summary updates the October 13 options document.
-Future work includes real planning, context selection, code edits, execution
-feedback and at most two automatic repairs, plus final user review and Git/SQLite
-rollback. Final change acceptance is separate from permission for an individual
-command. None of those later workflows are simulated as implemented here.
+The API currently truncates task prompts to 500 characters. Custom specs are stored as compressed changes from the starter; plans that still exceed the limit are rejected before tasks are created. Supporting arbitrary valid large specs requires an agreed task payload or persistence contract with Oğuz; this module does not change storage or shared interfaces.
