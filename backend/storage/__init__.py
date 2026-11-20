@@ -37,8 +37,11 @@ from backend.storage.repositories import (
     update_task_status,
 )
 from backend.storage.sqlite_storage import (
+    VALID_EXECUTION_STATUSES,
+    VALID_TASK_STATUSES,
     FileMetadataRecord,
     SQLiteStorage,
+    SessionRecord,
 )
 
 
@@ -141,7 +144,10 @@ class StorageService:
 __all__ = [
     "DEFAULT_DB_PATH",
     "SQLiteStorage",
+    "SessionRecord",
     "FileMetadataRecord",
+    "VALID_TASK_STATUSES",
+    "VALID_EXECUTION_STATUSES",
     "StorageService",
     "StorageError",
     "ValidationError",
