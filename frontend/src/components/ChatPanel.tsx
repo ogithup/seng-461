@@ -7,9 +7,11 @@ interface Props {
   sending: boolean;
   onSend: (text: string) => Promise<boolean>;
   blockedReason?: string;
+  /** Shown instead of the default text when there are no messages yet. */
+  emptyHint?: string;
 }
 
-export function ChatPanel({ messages, sending, onSend, blockedReason }: Props) {
+export function ChatPanel({ messages, sending, onSend, blockedReason, emptyHint }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: "end" });
@@ -20,7 +22,7 @@ export function ChatPanel({ messages, sending, onSend, blockedReason }: Props) {
       <h2>Chat</h2>
       <div className="messages" role="log" aria-live="polite">
         {messages.length === 0 && (
-          <p className="muted empty">No messages yet. Tell the agent what to build.</p>
+          <p className="muted empty">{emptyHint ?? "No messages yet. Tell the agent what to build."}</p>
         )}
         {messages.map((m) => (
           <div key={m.id} className={`bubble ${m.role}`}>
