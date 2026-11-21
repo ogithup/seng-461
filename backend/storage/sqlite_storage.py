@@ -6,6 +6,7 @@ Schema changes go in `MIGRATIONS`; `PRAGMA user_version` records how many have r
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
@@ -13,13 +14,54 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 from backend.storage.models import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
     NotFoundError,
+    ValidationError,
+    validate_non_empty_str,
+    validate_non_negative_int,
 )
+
+VALID_TASK_STATUSES = frozenset(
+    {
+        "pending",
+        "running",
+        "waiting_for_approval",
+        "succeeded",
+        "failed",
+        "skipped",
+        "cancelled",
+    }
+)
+VALID_EXECUTION_STATUSES = frozenset(
+    {
+        "pending_approval",
+        "succeeded",
+        "failed",
+        "rejected",
+        "expired",
+    }
+)
+_EXECUTION_TO_DEMOTED_TASK_STATUS = {
+    "failed": "failed",
+    "rejected": "cancelled",
+    "expired": "cancelled",
+    "pending_approval": "waiting_for_approval",
+}
+_LEGACY_TASK_STATUS_MAP = {
+    "pending": "pending",
+    "running": "running",
+    "waiting_for_approval": "waiting_for_approval",
+    "succeeded": "succeeded",
+    "completed": "succeeded",
+    "done": "succeeded",
+    "failed": "failed",
+    "skipped": "skipped",
+    "cancelled": "cancelled",
+}
 
 MIGRATIONS = [
     """
@@ -33,6 +75,7 @@ MIGRATIONS = [
         project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
         started_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
     CREATE TABLE tasks (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -136,14 +179,40 @@ def _text(value: Any) -> str:
     return str(getattr(value, "value", value))
 
 
+def _normalize_metadata_path(path: Any) -> str:
+    """Validate and normalize a project-relative POSIX file path for file_metadata."""
+    if not isinstance(path, str):
+        raise ValidationError("'path' must be a string.")
+    if not path or not path.strip() or "\x00" in path or ":" in path:
+        raise ValidationError("Invalid file metadata path: %r" % path)
+    normalized = path.strip().replace("\\", "/")
+    if normalized.startswith("/") or normalized.endswith("/"):
+        raise ValidationError("File metadata path must be a relative file path: %r" % path)
+    parts = normalized.split("/")
+    if any(part in ("", ".", "..") or part.startswith(".") for part in parts):
+        raise ValidationError("Unsafe file metadata path: %r" % path)
+    return "/".join(parts)
+
+
+def _validate_status(value: Any, allowed: frozenset[str], label: str) -> str:
+    text = _text(value)
+    if text not in allowed:
+        raise ValidationError("Invalid %s status %r." % (label, text))
+    return text
+
+
 class SQLiteStorage:
     def __init__(
-        self, db_path: Path | str, clock: Callable[[], datetime] = _utcnow
+        self,
+        db_path: Path | str,
+        clock: Callable[[], datetime] = _utcnow,
+        *,
+        recover_on_init: bool = True,
     ) -> None:
         self.db_path = Path(db_path)
         self._clock = clock
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._migrate()
+        self._migrate(recover=recover_on_init)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -156,7 +225,7 @@ class SQLiteStorage:
         finally:
             conn.close()
 
-    def _migrate(self) -> None:
+    def _migrate(self, *, recover: bool = True) -> None:
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             applied = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -175,7 +244,8 @@ class SQLiteStorage:
                     if statement.strip():
                         conn.execute(statement)
                 conn.execute("PRAGMA user_version = %d" % number)
-            # Ensure tables from migration 1 exist even if user_version was already 1
+            # Ensure indexes and tables from migration 1 exist even if user_version was already 1
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS idempotency_keys (
                     owner TEXT NOT NULL,
@@ -202,6 +272,8 @@ class SQLiteStorage:
                 );
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_file_metadata_project ON file_metadata(project_id);")
+            if recover:
+                self._recover_interrupted_state(conn)
 
     def _migrate_legacy_schema(self, conn: sqlite3.Connection) -> None:
         """Migrate legacy Sprint 1 schema (UUID text IDs, tasks.description, executions.success) to canonical schema."""
@@ -256,9 +328,11 @@ class SQLiteStorage:
         for t in old_tasks:
             new_pid = project_id_map.get(t["project_id"])
             if new_pid is not None:
+                raw_status = (t["status"] or "").strip().lower()
+                normalized_status = _LEGACY_TASK_STATUS_MAP.get(raw_status, "pending")
                 cur = conn.execute(
                     "INSERT INTO tasks_v1 (project_id, type, prompt, status) VALUES (?, 'step', ?, ?)",
-                    (new_pid, t["description"], t["status"]),
+                    (new_pid, t["description"], normalized_status),
                 )
                 task_id_map[t["id"]] = cur.lastrowid
 
@@ -287,6 +361,24 @@ class SQLiteStorage:
                         ),
                     )
 
+        # Ensure migrated tasks never stay 'succeeded' if their latest execution failed.
+        conn.execute(
+            """
+            UPDATE tasks_v1
+            SET status = 'failed'
+            WHERE status = 'succeeded'
+              AND EXISTS (
+                  SELECT 1 FROM executions_v1 e
+                  WHERE e.task_id = tasks_v1.id
+              )
+              AND (
+                  SELECT e2.status FROM executions_v1 e2
+                  WHERE e2.task_id = tasks_v1.id
+                  ORDER BY e2.id DESC LIMIT 1
+              ) != 'succeeded'
+            """
+        )
+
         conn.execute("DROP TABLE IF EXISTS executions")
         conn.execute("DROP TABLE IF EXISTS tasks")
         conn.execute("DROP TABLE IF EXISTS projects")
@@ -296,9 +388,116 @@ class SQLiteStorage:
         conn.execute("ALTER TABLE tasks_v1 RENAME TO tasks")
         conn.execute("ALTER TABLE executions_v1 RENAME TO executions")
 
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id)")
         conn.execute("CREATE INDEX idx_tasks_project ON tasks(project_id)")
         conn.execute("CREATE INDEX idx_executions_task ON executions(task_id)")
         conn.execute("PRAGMA user_version = 1")
+
+    def _recover_interrupted_state(self, conn: sqlite3.Connection) -> None:
+        """Clear orphaned in-flight state left behind by an unclean process exit."""
+        conn.execute("DELETE FROM idempotency_keys WHERE status_code IS NULL")
+        self._recover_interrupted_tasks_in_conn(conn)
+
+    def _recover_interrupted_tasks_in_conn(
+        self,
+        conn: sqlite3.Connection,
+        project_id: Optional[int] = None,
+        *,
+        include_pending: bool = False,
+    ) -> List[TaskRecord]:
+        """Mark interrupted 'running' tasks 'failed' and subsequent queued 'pending' tasks 'skipped'.
+
+        When ``include_pending=True`` and a project has no 'waiting_for_approval' task, orphaned
+        'pending' tasks (e.g. crash before the runner started) are also transitioned: first ->
+        'failed', subsequent -> 'skipped'.
+        """
+        changed_ids: List[int] = []
+
+        running_sql = "SELECT id, project_id FROM tasks WHERE status = 'running'"
+        running_params: list[Any] = []
+        if project_id is not None:
+            running_sql += " AND project_id = ?"
+            running_params.append(project_id)
+        running_sql += " ORDER BY id"
+        running_rows = conn.execute(running_sql, running_params).fetchall()
+
+        if running_rows:
+            min_interrupted_by_project: Dict[int, int] = {}
+            for row in running_rows:
+                tid = row["id"]
+                pid = row["project_id"]
+                changed_ids.append(tid)
+                if pid not in min_interrupted_by_project:
+                    min_interrupted_by_project[pid] = tid
+
+            if project_id is not None:
+                conn.execute(
+                    "UPDATE tasks SET status = 'failed' WHERE status = 'running' AND project_id = ?",
+                    (project_id,),
+                )
+            else:
+                conn.execute("UPDATE tasks SET status = 'failed' WHERE status = 'running'")
+
+            for pid, min_tid in min_interrupted_by_project.items():
+                pending_after = conn.execute(
+                    "SELECT id FROM tasks WHERE project_id = ? AND id > ? AND status = 'pending' ORDER BY id",
+                    (pid, min_tid),
+                ).fetchall()
+                if pending_after:
+                    changed_ids.extend(r["id"] for r in pending_after)
+                    conn.execute(
+                        "UPDATE tasks SET status = 'skipped'"
+                        " WHERE project_id = ? AND id > ? AND status = 'pending'",
+                        (pid, min_tid),
+                    )
+
+        if include_pending:
+            pending_sql = "SELECT id, project_id FROM tasks WHERE status = 'pending'"
+            pending_params: list[Any] = []
+            if project_id is not None:
+                pending_sql += " AND project_id = ?"
+                pending_params.append(project_id)
+            pending_sql += " ORDER BY project_id, id"
+            pending_rows = conn.execute(pending_sql, pending_params).fetchall()
+
+            pending_by_project: Dict[int, List[int]] = {}
+            for row in pending_rows:
+                pending_by_project.setdefault(row["project_id"], []).append(row["id"])
+
+            for pid, tids in pending_by_project.items():
+                has_waiting = conn.execute(
+                    "SELECT 1 FROM tasks WHERE project_id = ? AND status = 'waiting_for_approval' LIMIT 1",
+                    (pid,),
+                ).fetchone()
+                if has_waiting is not None:
+                    continue
+                first_tid, rest_tids = tids[0], tids[1:]
+                conn.execute("UPDATE tasks SET status = 'failed' WHERE id = ?", (first_tid,))
+                changed_ids.append(first_tid)
+                for tid in rest_tids:
+                    conn.execute("UPDATE tasks SET status = 'skipped' WHERE id = ?", (tid,))
+                    changed_ids.append(tid)
+
+        if not changed_ids:
+            return []
+        placeholders = ",".join("?" for _ in changed_ids)
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE id IN (%s) ORDER BY id" % placeholders,
+            changed_ids,
+        ).fetchall()
+        return [self._task(r) for r in rows]
+
+    def recover_interrupted_tasks(
+        self,
+        project_id: Optional[int] = None,
+        *,
+        include_pending: bool = False,
+    ) -> List[TaskRecord]:
+        """Recover interrupted 'running' tasks (and optionally orphan 'pending' tasks)."""
+        with self._connect() as conn:
+            return self._recover_interrupted_tasks_in_conn(
+                conn, project_id=project_id, include_pending=include_pending
+            )
 
     def _now(self) -> str:
         return self._clock().astimezone(timezone.utc).isoformat()
@@ -329,11 +528,12 @@ class SQLiteStorage:
     # projects / sessions
 
     def create_project(self, name: str) -> ProjectRecord:
+        cleaned_name = validate_non_empty_str(name, "name")
         created = self._now()
         new_id = self._insert(
-            "INSERT INTO projects (name, created_at) VALUES (?, ?)", (name, created), "project"
+            "INSERT INTO projects (name, created_at) VALUES (?, ?)", (cleaned_name, created), "project"
         )
-        return ProjectRecord(new_id, name, self._when(created))
+        return ProjectRecord(new_id, cleaned_name, self._when(created))
 
     def get_project(self, project_id: int) -> Optional[ProjectRecord]:
         with self._connect() as conn:
@@ -354,15 +554,35 @@ class SQLiteStorage:
         )
         return SessionRecord(new_id, project_id, self._when(started))
 
+    def get_session(self, session_id: int) -> Optional[SessionRecord]:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return (
+            SessionRecord(row["id"], row["project_id"], self._when(row["started_at"]))
+            if row
+            else None
+        )
+
+    def list_sessions(self, project_id: int) -> List[SessionRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM sessions WHERE project_id = ? ORDER BY id", (project_id,)
+            ).fetchall()
+        return [
+            SessionRecord(r["id"], r["project_id"], self._when(r["started_at"])) for r in rows
+        ]
+
     # tasks
 
     def create_task(self, project_id: int, task_type: str, prompt: str) -> TaskRecord:
+        cleaned_type = validate_non_empty_str(task_type, "task_type")
+        cleaned_prompt = validate_non_empty_str(prompt, "prompt")
         new_id = self._insert(
             "INSERT INTO tasks (project_id, type, prompt) VALUES (?, ?, ?)",
-            (project_id, task_type, prompt),
+            (project_id, cleaned_type, cleaned_prompt),
             "project %s" % project_id,
         )
-        return TaskRecord(new_id, project_id, task_type, "pending", prompt)
+        return TaskRecord(new_id, project_id, cleaned_type, "pending", cleaned_prompt)
 
     def get_task(self, task_id: int) -> Optional[TaskRecord]:
         with self._connect() as conn:
@@ -377,11 +597,23 @@ class SQLiteStorage:
         return [self._task(r) for r in rows]
 
     def update_task_status(self, task_id: int, status: str) -> TaskRecord:
+        status_text = _validate_status(status, VALID_TASK_STATUSES, "task")
         with self._connect() as conn:
-            conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (_text(status), task_id))
+            existing = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if existing is None:
+                raise NotFoundError("task %s does not exist" % task_id)
+            if status_text == "succeeded":
+                latest_exec = conn.execute(
+                    "SELECT status FROM executions WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                    (task_id,),
+                ).fetchone()
+                if latest_exec is not None and latest_exec["status"] != "succeeded":
+                    raise ValidationError(
+                        "Cannot mark task %s as 'succeeded' when latest execution status is %r."
+                        % (task_id, latest_exec["status"])
+                    )
+            conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status_text, task_id))
             row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        if row is None:
-            raise NotFoundError("task %s does not exist" % task_id)
         return self._task(row)
 
     # executions
@@ -398,21 +630,53 @@ class SQLiteStorage:
         reason: Optional[str] = None,
         project_id: Optional[int] = None,
     ) -> ExecutionRecord:
-        task = self.get_task(task_id)
-        if task is None:
-            raise NotFoundError("task %s does not exist" % task_id)
-        if project_id is not None and task.project_id != project_id:
-            raise NotFoundError("task %s does not belong to project %s" % (task_id, project_id))
+        cleaned_command = validate_non_empty_str(command, "command")
+        status_text = _validate_status(status, VALID_EXECUTION_STATUSES, "execution")
+        if not isinstance(stdout, str):
+            raise ValidationError("'stdout' must be a string.")
+        if not isinstance(stderr, str):
+            raise ValidationError("'stderr' must be a string.")
+        validated_retries = validate_non_negative_int(retry_count, "retry_count")
+        validated_duration = validate_non_negative_int(duration_ms, "duration_ms")
+
         created = self._now()
-        new_id = self._insert(
-            "INSERT INTO executions (task_id, command, status, stdout, stderr, retry_count,"
-            " duration_ms, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (task_id, command, _text(status), stdout, stderr, retry_count, duration_ms, reason, created),
-            "task %s" % task_id,
-        )
+        with self._connect() as conn:
+            task_row = conn.execute(
+                "SELECT id, project_id, status FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if task_row is None:
+                raise NotFoundError("task %s does not exist" % task_id)
+            if project_id is not None and task_row["project_id"] != project_id:
+                raise NotFoundError("task %s does not belong to project %s" % (task_id, project_id))
+            new_id = conn.execute(
+                "INSERT INTO executions (task_id, command, status, stdout, stderr, retry_count,"
+                " duration_ms, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    task_id,
+                    cleaned_command,
+                    status_text,
+                    stdout,
+                    stderr,
+                    validated_retries,
+                    validated_duration,
+                    reason,
+                    created,
+                ),
+            ).lastrowid
+            if status_text != "succeeded" and task_row["status"] == "succeeded":
+                demoted = _EXECUTION_TO_DEMOTED_TASK_STATUS[status_text]
+                conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (demoted, task_id))
         return ExecutionRecord(
-            new_id, task_id, command, _text(status), stdout, stderr, retry_count,
-            duration_ms, reason, self._when(created),
+            new_id,
+            task_id,
+            cleaned_command,
+            status_text,
+            stdout,
+            stderr,
+            validated_retries,
+            validated_duration,
+            reason,
+            self._when(created),
         )
 
     def get_execution(self, execution_id: int, project_id: Optional[int] = None) -> Optional[ExecutionRecord]:
@@ -436,16 +700,37 @@ class SQLiteStorage:
         retry_count: Optional[int] = None,
         duration_ms: Optional[int] = None,
     ) -> ExecutionRecord:
+        status_text = _validate_status(status, VALID_EXECUTION_STATUSES, "execution")
+        if stdout is not None and not isinstance(stdout, str):
+            raise ValidationError("'stdout' must be a string.")
+        if stderr is not None and not isinstance(stderr, str):
+            raise ValidationError("'stderr' must be a string.")
+        if retry_count is not None:
+            retry_count = validate_non_negative_int(retry_count, "retry_count")
+        if duration_ms is not None:
+            duration_ms = validate_non_negative_int(duration_ms, "duration_ms")
+
         with self._connect() as conn:
             conn.execute(
                 "UPDATE executions SET status = ?, stdout = COALESCE(?, stdout),"
                 " stderr = COALESCE(?, stderr), retry_count = COALESCE(?, retry_count),"
                 " duration_ms = COALESCE(?, duration_ms) WHERE id = ?",
-                (_text(status), stdout, stderr, retry_count, duration_ms, execution_id),
+                (status_text, stdout, stderr, retry_count, duration_ms, execution_id),
             )
             row = conn.execute("SELECT * FROM executions WHERE id = ?", (execution_id,)).fetchone()
-        if row is None:
-            raise NotFoundError("execution %s does not exist" % execution_id)
+            if row is None:
+                raise NotFoundError("execution %s does not exist" % execution_id)
+            if status_text != "succeeded":
+                latest = conn.execute(
+                    "SELECT id FROM executions WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                    (row["task_id"],),
+                ).fetchone()
+                if latest is not None and latest["id"] == row["id"]:
+                    demoted = _EXECUTION_TO_DEMOTED_TASK_STATUS[status_text]
+                    conn.execute(
+                        "UPDATE tasks SET status = ? WHERE id = ? AND status = 'succeeded'",
+                        (demoted, row["task_id"]),
+                    )
         return self._execution(row)
 
     def list_executions(
@@ -487,37 +772,42 @@ class SQLiteStorage:
         size_bytes: int,
         sha256: str = "",
     ) -> FileMetadataRecord:
-        if self.get_project(project_id) is None:
-            raise NotFoundError("project %s does not exist" % project_id)
+        norm_path = _normalize_metadata_path(path)
+        validated_size = validate_non_negative_int(size_bytes, "size_bytes")
+        if not isinstance(sha256, str):
+            raise ValidationError("'sha256' must be a string.")
         now = self._now()
         with self._connect() as conn:
+            if conn.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
+                raise NotFoundError("project %s does not exist" % project_id)
             row = conn.execute(
                 "SELECT id, created_at FROM file_metadata WHERE project_id = ? AND path = ?",
-                (project_id, path),
+                (project_id, norm_path),
             ).fetchone()
             if row:
                 conn.execute(
                     "UPDATE file_metadata SET size_bytes = ?, sha256 = ?, updated_at = ? WHERE id = ?",
-                    (size_bytes, sha256, now, row["id"]),
+                    (validated_size, sha256, now, row["id"]),
                 )
                 return FileMetadataRecord(
-                    row["id"], project_id, path, size_bytes, sha256,
+                    row["id"], project_id, norm_path, validated_size, sha256,
                     self._when(row["created_at"]), self._when(now),
                 )
             new_id = conn.execute(
                 "INSERT INTO file_metadata (project_id, path, size_bytes, sha256, created_at, updated_at)"
                 " VALUES (?, ?, ?, ?, ?, ?)",
-                (project_id, path, size_bytes, sha256, now, now),
+                (project_id, norm_path, validated_size, sha256, now, now),
             ).lastrowid
             return FileMetadataRecord(
-                new_id, project_id, path, size_bytes, sha256,
+                new_id, project_id, norm_path, validated_size, sha256,
                 self._when(now), self._when(now),
             )
 
     def get_file_metadata(self, project_id: int, path: str) -> Optional[FileMetadataRecord]:
+        norm_path = _normalize_metadata_path(path)
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT * FROM file_metadata WHERE project_id = ? AND path = ?", (project_id, path)
+                "SELECT * FROM file_metadata WHERE project_id = ? AND path = ?", (project_id, norm_path)
             ).fetchone()
         if not row:
             return None
@@ -538,6 +828,57 @@ class SQLiteStorage:
             )
             for r in rows
         ]
+
+    def delete_file_metadata(self, project_id: int, path: str) -> bool:
+        norm_path = _normalize_metadata_path(path)
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM file_metadata WHERE project_id = ? AND path = ?",
+                (project_id, norm_path),
+            )
+        return cur.rowcount > 0
+
+    def verify_workspace_files(self, project_id: int, workspace_dir: Path | str) -> Dict[str, List[str]]:
+        """Verify persisted file metadata entries against files on disk in ``workspace_dir``."""
+        base = Path(workspace_dir).resolve()
+        with self._connect() as conn:
+            if conn.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone() is None:
+                raise NotFoundError("project %s does not exist" % project_id)
+            rows = conn.execute(
+                "SELECT * FROM file_metadata WHERE project_id = ? ORDER BY path", (project_id,)
+            ).fetchall()
+        verified: List[str] = []
+        missing: List[str] = []
+        mismatched: List[str] = []
+        for r in rows:
+            rel_path = r["path"]
+            try:
+                norm_path = _normalize_metadata_path(rel_path)
+            except ValidationError:
+                mismatched.append(rel_path)
+                continue
+            candidate = base.joinpath(*norm_path.split("/"))
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(base)
+            except (OSError, ValueError):
+                mismatched.append(rel_path)
+                continue
+            if not resolved.is_file():
+                missing.append(rel_path)
+                continue
+            data = resolved.read_bytes()
+            if len(data) != r["size_bytes"]:
+                mismatched.append(rel_path)
+                continue
+            expected_sha = (r["sha256"] or "").lower()
+            if expected_sha:
+                actual_sha = hashlib.sha256(data).hexdigest()
+                if not actual_sha.startswith(expected_sha):
+                    mismatched.append(rel_path)
+                    continue
+            verified.append(rel_path)
+        return {"verified": verified, "missing": missing, "mismatched": mismatched}
 
     # durable idempotency
 
