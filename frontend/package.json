@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:live": "vite --mode live",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:smoke": "vitest run src/__tests__/live.smoke.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
