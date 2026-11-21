@@ -109,9 +109,12 @@ def test_links_to_missing_pages_or_anchors_are_rejected(href):
     assert any("points at missing" in p for p in problems_of(spec))
 
 
-def test_duplicate_section_ids_on_a_page_are_rejected():
+def test_duplicate_explicit_section_ids_on_a_page_are_rejected():
     spec = minimal()
-    spec["pages"][0]["sections"] = [{"heading": "Same", "body": "a"}, {"heading": "Same", "body": "b"}]
+    spec["pages"][0]["sections"] = [
+        {"id": "same", "heading": "One", "body": "a"},
+        {"id": "same", "heading": "Two", "body": "b"},
+    ]
     assert any("duplicate section id" in p for p in problems_of(spec))
 
 
