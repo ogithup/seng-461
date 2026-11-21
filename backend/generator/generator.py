@@ -13,7 +13,8 @@ from backend.generator.validator import validate_site
 
 
 class GenerationError(ValueError):
-    """The generator produced a site that fails its own validation (a bug, never user error)."""
+    """The generated site fails validation: a generator bug, or content too large for the
+    executor's file size limit (see `validator.MAX_FILE_BYTES`)."""
 
     def __init__(self, problems: List[str]):
         self.problems = list(problems)
@@ -46,5 +47,6 @@ class WebsiteGenerator:
         return files
 
     @staticmethod
-    def starter_spec(site_type: str, title: str) -> Dict[str, Any]:
-        return starter_spec(site_type, title)
+    def starter_spec(site_type: str, title: str, **choices: Any) -> Dict[str, Any]:
+        """See `templates.starter_spec`; `choices` are `pages`, `theme` and `tagline`."""
+        return starter_spec(site_type, title, **choices)

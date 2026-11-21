@@ -12,3 +12,9 @@ workspaces/
 # SQLite databases created at runtime
 data/
 *.db
+
+# Load test reports
+loadtest/results/
+
+# macOS
+.DS_Store

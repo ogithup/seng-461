@@ -45,6 +45,9 @@ MAX_ITEMS = 24
 MAX_TITLE = 80
 MAX_TEXT = 4000
 
+# ids the page layout itself uses (skip link target and navigation); sections may not take them.
+RESERVED_IDS = frozenset({"content", "site-nav"})
+
 _SLUG = re.compile(r"^[a-z0-9-]{1,40}$")
 _COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 _ANCHOR = re.compile(r"^[a-z][a-z0-9-]{0,59}$")
@@ -142,10 +145,14 @@ def _section(raw: Any, where: str, problems: List[str], default_kind: str) -> Op
     items = _items(raw.get("items"), where + ".items", problems)
     body = _text(raw.get("body"), where + ".body", problems, not items)
     anchor = raw.get("id")
+    explicit = anchor is not None
     if anchor is None:
-        anchor = slugify(heading) if heading else None
+        anchor = None  # assigned per page by _assign_anchors, after explicit ids are known
     elif not isinstance(anchor, str) or not _ANCHOR.match(anchor):
         problems.append("%s.id must start with a letter and use a-z, 0-9, '-'" % where)
+        anchor = None
+    elif anchor in RESERVED_IDS:
+        problems.append("%s.id %r is reserved by the page layout" % (where, anchor))
         anchor = None
     cta = raw.get("cta")
     if cta is not None:
@@ -159,7 +166,30 @@ def _section(raw: Any, where: str, problems: List[str], default_kind: str) -> Op
             }
             if cta["href"] is None:
                 problems.append("%s.cta.href is required" % where)
-    return {"kind": kind, "heading": heading, "body": body, "id": anchor, "items": items, "cta": cta}
+    return {"kind": kind, "heading": heading, "body": body, "id": anchor, "items": items, "cta": cta,
+            "_explicit_id": explicit}
+
+
+def _assign_anchors(sections: List[Dict[str, Any]]) -> None:
+    """Give every section without an explicit id a unique anchor derived from its heading.
+
+    Explicit ids are kept as given (duplicates among them are reported later). Generated
+    ids never collide with an explicit id, another generated id or a layout id, so two
+    sections that share a heading get `heading` and `heading-2` instead of an error.
+    """
+    taken = set(RESERVED_IDS)
+    taken.update(s["id"] for s in sections if s["_explicit_id"] and s["id"])
+    for section in sections:
+        explicit = section.pop("_explicit_id")
+        if explicit or not section["heading"]:
+            continue
+        base = slugify(section["heading"])[:56].strip("-") or "section"
+        anchor, n = base, 2
+        while anchor in taken:
+            anchor = "%s-%d" % (base, n)
+            n += 1
+        taken.add(anchor)
+        section["id"] = anchor
 
 
 def _theme(raw: Any, site_type: str, problems: List[str]) -> Dict[str, str]:
@@ -267,6 +297,7 @@ def normalize_spec(spec: Any) -> Dict[str, Any]:
             )
             if parsed:
                 sections.append(parsed)
+        _assign_anchors(sections)
         pages.append({"slug": slug, "title": name, "sections": sections})
 
     slugs = [p["slug"] for p in pages]

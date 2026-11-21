@@ -10,7 +10,9 @@
 - internal references: every relative `href`/`src` points at a generated file, and every
   `#anchor` (same page or `page.html#anchor`) exists;
 - every page is reachable from the navigation on `index.html`;
-- the stylesheet is responsive (`@media` rule).
+- the stylesheet is responsive (`@media` rule);
+- no element id is used twice on a page;
+- every file fits the executor's size limit (`MAX_FILE_BYTES`) and the file count is bounded.
 
 Pass `spec` (normalized or raw) to also check that the file set matches it exactly.
 """
@@ -20,6 +22,10 @@ from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Set
 
 REQUIRED_FILES = ("index.html", "style.css")
+# Same as the workspace executor's default `max_file_bytes`. Checking it here rejects an
+# oversized site before any file is written, instead of failing half-way through a build.
+MAX_FILE_BYTES = 200_000
+MAX_FILES = 20  # 12 pages + style.css + script.js, with headroom
 ALLOWED_SUFFIXES = (".html", ".css", ".js", ".json", ".svg", ".txt", ".md", ".xml", ".webmanifest")
 _EXTERNAL = re.compile(r"^(?:[a-z][a-z0-9+.-]*:|//)", re.IGNORECASE)
 _SAFE_SCHEMES = ("http:", "https:", "mailto:", "tel:")
@@ -31,6 +37,7 @@ class _PageParser(HTMLParser):
         self.tags: List[str] = []
         self.attrs: List[Dict[str, Optional[str]]] = []
         self.ids: Set[str] = set()
+        self.duplicate_ids: Set[str] = set()
         self.refs: List[str] = []
         self.nav_refs: List[str] = []
         self.stylesheets: List[str] = []
@@ -46,6 +53,8 @@ class _PageParser(HTMLParser):
         a = dict(attrs)
         self.tags.append(tag)
         if a.get("id"):
+            if a["id"] in self.ids:
+                self.duplicate_ids.add(a["id"])
             self.ids.add(a["id"])
         if tag == "html":
             self.lang = a.get("lang")
@@ -120,6 +129,13 @@ def validate_site(files: Any, spec: Optional[Dict[str, Any]] = None) -> List[str
             problems.append("%s content must be text" % path)
         elif not content.strip():
             problems.append("%s is empty" % path)
+        elif len(content.encode("utf-8")) > MAX_FILE_BYTES:
+            problems.append(
+                "%s is larger than %d bytes; shorten the content or split it over more pages"
+                % (path, MAX_FILE_BYTES)
+            )
+    if len(files) > MAX_FILES:
+        problems.append("a site may have at most %d files (got %d)" % (MAX_FILES, len(files)))
 
     pages: Dict[str, _PageParser] = {}
     for path, content in sorted(files.items()):
@@ -153,6 +169,8 @@ def validate_site(files: Any, spec: Optional[Dict[str, Any]] = None) -> List[str
             problems.append("%s must have exactly one <h1> (found %d)" % (path, parser.h1_count))
         if not parser.stylesheets:
             problems.append("%s does not link a stylesheet" % path)
+        for dup in sorted(parser.duplicate_ids):
+            problems.append("%s uses the id %r more than once" % (path, dup))
 
     # Internal references and anchors.
     for path, parser in pages.items():
